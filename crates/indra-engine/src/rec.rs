@@ -11,19 +11,27 @@
 use std::path::Path;
 
 use crate::gemm::{Act, Out, PackedB, gemm};
+use crate::qgemm::{QPackedB, qgemm};
 use crate::onnx::{Graph, Node};
 use crate::simd::{argmax_row, col_sums, dwconv1d, scale_cols, sigmoid, sum_exp};
 use crate::{EngineError, Result};
 
 pub(crate) struct Block {
+    // float weights [N, K], kept to quantize on request
+    expand_w: Vec<f32>,
+    expand_b: Vec<f32>,
+    project_w: Vec<f32>,
+    project_b: Vec<f32>,
     dw_w: Vec<f32>, // [K, C]
     dw_b: Vec<f32>,
     expand: PackedB,
+    expand_q: Option<QPackedB>,
     se1_w: Vec<f32>, // [R, E]
     se1_b: Vec<f32>,
     se2_w: Vec<f32>, // [E, R]
     se2_b: Vec<f32>,
     project: PackedB,
+    project_q: Option<QPackedB>,
 }
 
 /// A recognizer's output for one line: per timestep, the best class and its
@@ -43,6 +51,7 @@ pub struct Recognizer {
     stem: PackedB,
     blocks: Vec<Block>,
     head: PackedB,
+    head_q: Option<QPackedB>,
     classes: usize,
     // lengths = floor((w + add - sub) / div)
     len_add: i64,
@@ -125,11 +134,36 @@ impl Recognizer {
         if len_div <= 0 {
             return Err(bad("lengths divisor"));
         }
-        Ok(Recognizer { height, pw, c, e, stem, blocks, head, classes, len_add, len_sub, len_div, all_conf: false })
+        Ok(Recognizer { height, pw, c, e, stem, blocks, head, classes, len_add, len_sub, len_div, all_conf: false, head_q: None })
     }
 
     pub fn height(&self) -> usize {
         self.height
+    }
+
+    /// Run the block and classifier products in int8 (AVX-512 VNNI only):
+    /// faster, slightly less exact. Returns whether int8 is in use.
+    pub fn quantize(&mut self, head_w: &[f32], head_b: &[f32]) -> bool {
+        if !crate::qgemm::available() {
+            return false;
+        }
+        let c = self.c;
+        for b in self.blocks.iter_mut() {
+            b.expand_q = QPackedB::from_nk(&b.expand_w, b.expand_b.len(), c, Some(&b.expand_b));
+            b.project_q = QPackedB::from_nk(&b.project_w, c, b.expand_b.len(), Some(&b.project_b));
+        }
+        self.head_q = QPackedB::from_nk(head_w, self.classes, c, Some(head_b));
+        true
+    }
+
+    /// The recognizer of ``path`` with int8 products where the CPU has VNNI.
+    pub fn load_int8(path: &Path) -> Result<Self> {
+        let g = Graph::load(path)?;
+        let mut r = Self::from_graph(&g).map_err(|e| EngineError::Model(format!("{}: {e}", path.display())))?;
+        let convs: Vec<&Node> = g.ops("Conv").collect();
+        let (hw, hb) = conv_wb(&g, convs[convs.len() - 1])?;
+        r.quantize(&hw.f32, &hb.f32);
+        Ok(r)
     }
     pub fn classes(&self) -> usize {
         self.classes
@@ -223,7 +257,11 @@ impl Recognizer {
             let mut prev = u32::MAX;
             for r0 in (0..t).step_by(ROWS) {
                 let rows = ROWS.min(t - r0);
-                gemm(&ws.x[(s0 + r0) * c..(s0 + r0 + rows) * c], c, rows, &self.head, &mut ws.logits, v, Act::None, Out::Store);
+                let xs = &ws.x[(s0 + r0) * c..(s0 + r0 + rows) * c];
+                match &self.head_q {
+                    Some(q) => qgemm(xs, c, rows, q, &mut ws.logits, v, Act::None, Out::Store),
+                    None => gemm(xs, c, rows, &self.head, &mut ws.logits, v, Act::None, Out::Store),
+                }
                 prof.lap("rec.head");
                 for r in 0..rows {
                     let row = &ws.logits[r * v..(r + 1) * v];
@@ -278,11 +316,17 @@ pub(crate) fn load_blocks(g: &Graph, convs: &[&Node], c: usize) -> Result<(Vec<B
             dw_w,
             dw_b: dwb.f32.clone(),
             expand: PackedB::from_nk(&ew.f32, e, c, Some(&eb.f32)),
+            expand_q: None,
+            expand_w: ew.f32.clone(),
+            expand_b: eb.f32.clone(),
             se1_w: s1w.f32.clone(),
             se1_b: s1b.f32.clone(),
             se2_w: s2w.f32.clone(),
             se2_b: s2b.f32.clone(),
             project: PackedB::from_nk(&pjw.f32, c, e, Some(&pjb.f32)),
+            project_q: None,
+            project_w: pjw.f32.clone(),
+            project_b: pjb.f32.clone(),
         });
     }
     Ok((blocks, e))
@@ -308,7 +352,10 @@ pub(crate) fn run_blocks(
             dwconv1d(&x[s0 * c..(s0 + t) * c], t, c, &b.dw_w, &b.dw_b, &mut d[s0 * c..(s0 + t) * c]);
         }
         prof.lap("rec.dwconv");
-        gemm(d, c, total, &b.expand, ex, e, Act::HardSwish, Out::Store);
+        match &b.expand_q {
+            Some(q) => qgemm(d, c, total, q, ex, e, Act::HardSwish, Out::Store),
+            None => gemm(d, c, total, &b.expand, ex, e, Act::HardSwish, Out::Store),
+        }
         prof.lap("rec.expand");
         // squeeze-excite per line
         for &(s0, t) in segs {
@@ -322,7 +369,10 @@ pub(crate) fn run_blocks(
             scale_cols(seg, &s);
         }
         prof.lap("rec.se");
-        gemm(ex, e, total, &b.project, x, c, Act::None, Out::Add);
+        match &b.project_q {
+            Some(q) => qgemm(ex, e, total, q, x, c, Act::None, Out::Add),
+            None => gemm(ex, e, total, &b.project, x, c, Act::None, Out::Add),
+        }
         prof.lap("rec.project");
     }
 }
