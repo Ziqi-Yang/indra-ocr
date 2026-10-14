@@ -161,7 +161,9 @@ pub fn gemm_par(par: &crate::par::Par, a: &[f32], lda: usize, m: usize, b: &Pack
         return gemm(a, lda, m, b, c, ldc, act, out);
     }
     let mr = tile_rows(b.isa, b.nr);
-    let rows = m.div_ceil(t).div_ceil(mr) * mr;
+    // several chunks per thread, claimed as threads come free: a slow core
+    // (another process, a descheduled vCPU) does not hold up the rest
+    let rows = m.div_ceil(t * 4).div_ceil(mr).max(1) * mr;
     par.chunks(&mut c[..m * ldc], rows * ldc, |i, cc| {
         let r0 = i * rows;
         let n = cc.len() / ldc;

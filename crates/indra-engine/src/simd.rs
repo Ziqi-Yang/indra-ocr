@@ -174,10 +174,46 @@ pub fn erf(x: f32) -> f32 {
     (if x >= 0.0 { y } else { -y }) as f32
 }
 
-/// GELU with the exact erf, in place.
-pub fn gelu(x: &mut [f32]) {
-    for v in x {
-        *v = *v * 0.5 * (1.0 + erf(*v / std::f32::consts::SQRT_2));
+/// erf(x) in float32, branch-free (vectorizes): the same erfc fit as ``erf``,
+/// with ``exp_f32``; absolute error about 2e-7.
+#[inline(always)]
+pub fn erf_f32(x: f32) -> f32 {
+    let a = x.abs();
+    let t = 1.0 / (1.0 + 0.5 * a);
+    let p = -1.265_512_2
+        + t * (1.000_023_7
+            + t * (0.374_091_96
+                + t * (0.096_784_18
+                    + t * (-0.186_288_06
+                        + t * (0.278_868_07 + t * (-1.135_204 + t * (1.488_515_9 + t * (-0.822_152_2 + t * 0.170_872_77))))))));
+    let y = 1.0 - t * exp_f32(-a * a + p);
+    if x >= 0.0 { y } else { -y }
+}
+
+multiversion! {
+    /// GELU with erf, in place.
+    pub fn gelu(x: &mut [f32]) {
+        for v in x.iter_mut() {
+            *v = *v * 0.5 * (1.0 + erf_f32(*v * std::f32::consts::FRAC_1_SQRT_2));
+        }
+    }
+}
+
+multiversion! {
+    /// Softmax of each row of an [R, n] matrix, in place.
+    pub fn softmax_rows(m: &mut [f32], n: usize) {
+        for row in m.chunks_exact_mut(n) {
+            let mx = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let mut sum = 0.0;
+            for e in row.iter_mut() {
+                *e = exp_f32(*e - mx);
+                sum += *e;
+            }
+            let inv = 1.0 / sum;
+            for e in row.iter_mut() {
+                *e *= inv;
+            }
+        }
     }
 }
 
@@ -223,6 +259,15 @@ mod tests {
         assert!(worst < 1e-6, "relative error {worst}");
         for &x in &[0.5f32, 1.0, 1.5, 3.0, 1e-3, 1e5] {
             assert!((ln_f32(x) - x.ln()).abs() <= 2e-7 * x.ln().abs().max(1.0), "ln({x})");
+        }
+    }
+
+    #[test]
+    fn erf_f32_accuracy() {
+        let mut x = -6.0f32;
+        while x < 6.0 {
+            assert!((erf_f32(x) - erf(x)).abs() < 5e-7, "erf_f32({x})");
+            x += 0.013;
         }
     }
 

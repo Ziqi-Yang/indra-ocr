@@ -199,18 +199,23 @@ impl OrderNet {
                 }
             }
         }
+        let mut prof = crate::profile::Timer::start();
         let mut h1 = self.emb1.apply(&x0, n);
         gelu(&mut h1);
         let mut x = self.emb2.apply(&h1, n);
+        prof.lap("order.embed");
         for l in &self.layers {
             let a = l.ln1.apply(&x);
             let qkv = l.qkv.apply(&a, n);
+            prof.lap("order.qkv");
             let att = self.attention(&qkv, n);
+            prof.lap("order.attention");
             gemm(&att, d, n, &l.proj.w, &mut x, d, Act::None, Out::Add);
             let b = l.ln2.apply(&x);
             let mut f = l.ff1.apply(&b, n);
             gelu(&mut f);
             gemm(&f, l.ff1.w.n, n, &l.ff2.w, &mut x, d, Act::None, Out::Add);
+            prof.lap("order.ffn");
         }
         let z = self.ln.apply(&x);
         let scale = 1.0 / (d as f32).sqrt();
@@ -241,6 +246,7 @@ impl OrderNet {
             }
         }
         let cls = self.cls.apply(&z, n);
+        prof.lap("order.heads");
         OrderOut { a, cls, same, tab, n_cls: self.cls.w.n }
     }
 
@@ -252,27 +258,20 @@ impl OrderNet {
         // q and k are both scaled by sqrt(1 / sqrt(hd)), as in the export
         let s = (1.0 / (hd as f32).sqrt()).sqrt();
         let mut out = vec![0f32; n * d];
+        let (mut q, mut k, mut v) = (vec![0f32; n * hd], vec![0f32; n * hd], vec![0f32; n * hd]);
+        let mut o = vec![0f32; n * hd];
         for h in 0..self.heads {
-            let part = |which: usize| -> Vec<f32> {
-                (0..n).flat_map(|i| qkv[i * 3 * d + which * d + h * hd..i * 3 * d + which * d + (h + 1) * hd].to_vec()).collect()
-            };
-            let (q, k, v) = (part(0), part(1), part(2));
-            let q: Vec<f32> = q.iter().map(|x| x * s).collect();
-            let k: Vec<f32> = k.iter().map(|x| x * s).collect();
-            let mut p = bilinear(&q, &k, n, hd, 1.0);
-            for row in p.chunks_exact_mut(n) {
-                let m = row.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                let mut sum = 0.0;
-                for e in row.iter_mut() {
-                    *e = (*e - m).exp();
-                    sum += *e;
-                }
-                for e in row.iter_mut() {
-                    *e /= sum;
+            for i in 0..n {
+                let row = &qkv[i * 3 * d..(i + 1) * 3 * d];
+                for (dst, which) in [(&mut q, 0), (&mut k, 1), (&mut v, 2)] {
+                    dst[i * hd..(i + 1) * hd].copy_from_slice(&row[which * d + h * hd..which * d + (h + 1) * hd]);
                 }
             }
+            q.iter_mut().for_each(|x| *x *= s);
+            k.iter_mut().for_each(|x| *x *= s);
+            let mut p = bilinear(&q, &k, n, hd, 1.0);
+            crate::simd::softmax_rows(&mut p, n);
             let vb = PackedB::from_kn(&v, n, hd, None);
-            let mut o = vec![0f32; n * hd];
             gemm(&p, n, n, &vb, &mut o, hd, Act::None, Out::Store);
             for i in 0..n {
                 out[i * d + h * hd..i * d + (h + 1) * hd].copy_from_slice(&o[i * hd..(i + 1) * hd]);

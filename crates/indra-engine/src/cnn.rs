@@ -426,7 +426,8 @@ impl Net {
             }
             Step::Unary { x, op, .. } => {
                 let mut f = self.take(v, *x, k)?;
-                unary(&mut f.data, *op);
+                let len = row_chunk(par, f.h, f.w * f.c);
+                par.chunks(&mut f.data, len, |_, c| unary(c, *op));
                 Val::Feat(f)
             }
             Step::Add { a, b, .. } => {
@@ -435,7 +436,8 @@ impl Net {
                 if (fa.h, fa.w, fa.c) != (fb.h, fb.w, fb.c) {
                     return Err(EngineError::Model("Add of feature maps of different shapes".into()));
                 }
-                add_into(&mut fa.data, &fb.data);
+                let len = row_chunk(par, fa.h, fa.w * fa.c);
+                par.chunks(&mut fa.data, len, |i, c| add_into(c, &fb.data[i * len..i * len + c.len()]));
                 Val::Feat(fa)
             }
             Step::MulScalar { x, s, .. } => {
@@ -448,19 +450,25 @@ impl Net {
                 if sz.len() != 4 {
                     return Err(EngineError::Model("Resize sizes are not [N, C, H, W]".into()));
                 }
-                Val::Feat(resize_nearest(self.feat(v, *x)?, sz[2] as usize, sz[3] as usize))
+                Val::Feat(resize_nearest(self.feat(v, *x)?, sz[2] as usize, sz[3] as usize, par))
             }
-            Step::DepthToSpace { x, b, .. } => Val::Feat(depth_to_space(self.feat(v, *x)?, *b)),
-            Step::SpaceToDepth { x, b, .. } => Val::Feat(space_to_depth(self.feat(v, *x)?, *b)),
+            Step::DepthToSpace { x, b, .. } => Val::Feat(depth_to_space(self.feat(v, *x)?, *b, par)),
+            Step::SpaceToDepth { x, b, .. } => Val::Feat(space_to_depth(self.feat(v, *x)?, *b, par)),
             Step::SliceC { x, start, end, .. } => {
                 let f = self.feat(v, *x)?;
                 let c = f.c as i64;
                 let clamp = |i: i64| if i < 0 { (i + c).clamp(0, c) } else { i.min(c) } as usize;
                 let (s0, s1) = (clamp(*start), clamp(*end).max(clamp(*start)));
-                let mut o = Feat::new(f.h, f.w, s1 - s0);
-                for (dst, src) in o.data.chunks_exact_mut(s1 - s0).zip(f.data.chunks_exact(f.c)) {
-                    dst.copy_from_slice(&src[s0..s1]);
-                }
+                let oc = s1 - s0;
+                let mut o = Feat::new(f.h, f.w, oc);
+                let rows = row_chunk(par, f.h, f.w) / f.w.max(1);
+                par.chunks(&mut o.data, rows * f.w * oc, |i, chunk| {
+                    let p0 = i * rows * f.w;
+                    for (k, dst) in chunk.chunks_exact_mut(oc).enumerate() {
+                        let p = p0 + k;
+                        dst.copy_from_slice(&f.data[p * f.c + s0..p * f.c + s1]);
+                    }
+                });
                 Val::Feat(o)
             }
             Step::ConcatC { xs, .. } => {
@@ -471,13 +479,18 @@ impl Net {
                 }
                 let c: usize = fs.iter().map(|f| f.c).sum();
                 let mut o = Feat::new(h, w, c);
-                for p in 0..h * w {
-                    let mut off = 0;
-                    for f in &fs {
-                        o.data[p * c + off..p * c + off + f.c].copy_from_slice(&f.data[p * f.c..(p + 1) * f.c]);
-                        off += f.c;
+                let rows = row_chunk(par, h, w) / w.max(1);
+                par.chunks(&mut o.data, rows * w * c, |i, chunk| {
+                    let p0 = i * rows * w;
+                    for (k, dst) in chunk.chunks_exact_mut(c).enumerate() {
+                        let p = p0 + k;
+                        let mut off = 0;
+                        for f in &fs {
+                            dst[off..off + f.c].copy_from_slice(&f.data[p * f.c..(p + 1) * f.c]);
+                            off += f.c;
+                        }
                     }
-                }
+                });
                 Val::Feat(o)
             }
             Step::Pool { x, max, .. } => Val::Feat(pool2(self.feat(v, *x)?, *max)),
@@ -661,8 +674,8 @@ fn fused_ir(x: &Feat, b: &FusedIr, residual: Option<&Feat>, par: &Par) -> Feat {
     // tile height: the expanded rows (tile + halo) about 512 KiB
     let row_bytes = w * ce * 4;
     let rows = ((512 * 1024) / row_bytes.max(1)).saturating_sub(2 * b.pad).clamp(1, h.max(1));
-    // at least a few tiles per thread
-    let rows = rows.min(h.div_ceil(par.threads() * 2)).max(1);
+    // a few tiles per thread
+    let rows = rows.min(h.div_ceil(par.threads() * 4)).max(1);
     par.chunks(&mut y.data, rows * w * co, |t, yt| {
         let r0 = t * rows;
         let n = yt.len() / (w * co);
@@ -1028,58 +1041,76 @@ fn unary(x: &mut [f32], op: Unary) {
     }
 }
 
+/// Elements per parallel chunk of a map with ``h`` rows of ``row`` elements:
+/// whole rows, a few chunks per thread.
+fn row_chunk(par: &Par, h: usize, row: usize) -> usize {
+    h.div_ceil(par.threads() * 4).max(1) * row.max(1)
+}
+
 /// Nearest-neighbour resize, asymmetric coordinates, floor (ONNX Resize).
-fn resize_nearest(x: &Feat, oh: usize, ow: usize) -> Feat {
+fn resize_nearest(x: &Feat, oh: usize, ow: usize, par: &Par) -> Feat {
     let mut o = Feat::new(oh, ow, x.c);
     let (sy, sx) = (oh as f32 / x.h as f32, ow as f32 / x.w as f32);
     let map = |i: usize, s: f32, n: usize| ((i as f32 / s).floor() as usize).min(n - 1);
     let cols: Vec<usize> = (0..ow).map(|j| map(j, sx, x.w)).collect();
-    for i in 0..oh {
-        let iy = map(i, sy, x.h);
-        for (j, &ix) in cols.iter().enumerate() {
-            o.data[(i * ow + j) * x.c..(i * ow + j + 1) * x.c].copy_from_slice(&x.data[(iy * x.w + ix) * x.c..(iy * x.w + ix + 1) * x.c]);
+    let c = x.c;
+    let rows = row_chunk(par, oh, 1);
+    par.chunks(&mut o.data, rows * ow * c, |t, chunk| {
+        for (r, orow) in chunk.chunks_exact_mut(ow * c).enumerate() {
+            let iy = map(t * rows + r, sy, x.h);
+            for (j, &ix) in cols.iter().enumerate() {
+                orow[j * c..(j + 1) * c].copy_from_slice(&x.data[(iy * x.w + ix) * c..(iy * x.w + ix + 1) * c]);
+            }
         }
-    }
+    });
     o
 }
 
 /// DepthToSpace, CRD: out[c][y * b + i][x * b + j] = in[c * b * b + i * b + j][y][x].
-fn depth_to_space(x: &Feat, b: usize) -> Feat {
+fn depth_to_space(x: &Feat, b: usize, par: &Par) -> Feat {
     let c = x.c / (b * b);
-    let mut o = Feat::new(x.h * b, x.w * b, c);
-    for y in 0..x.h {
-        for xx in 0..x.w {
-            let src = &x.data[(y * x.w + xx) * x.c..(y * x.w + xx + 1) * x.c];
-            for i in 0..b {
+    let (oh, ow) = (x.h * b, x.w * b);
+    let mut o = Feat::new(oh, ow, c);
+    let rows = row_chunk(par, oh, 1);
+    par.chunks(&mut o.data, rows * ow * c, |t, chunk| {
+        for (r, orow) in chunk.chunks_exact_mut(ow * c).enumerate() {
+            let oy = t * rows + r;
+            let (y, i) = (oy / b, oy % b);
+            for xx in 0..x.w {
+                let src = &x.data[(y * x.w + xx) * x.c..(y * x.w + xx + 1) * x.c];
                 for j in 0..b {
-                    let d = ((y * b + i) * o.w + xx * b + j) * c;
+                    let d = &mut orow[(xx * b + j) * c..(xx * b + j + 1) * c];
                     for ch in 0..c {
-                        o.data[d + ch] = src[ch * b * b + i * b + j];
+                        d[ch] = src[ch * b * b + i * b + j];
                     }
                 }
             }
         }
-    }
+    });
     o
 }
 
 /// The inverse of depth_to_space (channel c * b * b + i * b + j).
-fn space_to_depth(x: &Feat, b: usize) -> Feat {
+fn space_to_depth(x: &Feat, b: usize, par: &Par) -> Feat {
     let (oh, ow, oc) = (x.h / b, x.w / b, x.c * b * b);
     let mut o = Feat::new(oh, ow, oc);
-    for y in 0..oh {
-        for xx in 0..ow {
-            let d = &mut o.data[(y * ow + xx) * oc..(y * ow + xx + 1) * oc];
-            for i in 0..b {
-                for j in 0..b {
-                    let s = ((y * b + i) * x.w + xx * b + j) * x.c;
-                    for ch in 0..x.c {
-                        d[ch * b * b + i * b + j] = x.data[s + ch];
+    let rows = row_chunk(par, oh, 1);
+    par.chunks(&mut o.data, rows * ow * oc, |t, chunk| {
+        for (r, orow) in chunk.chunks_exact_mut(ow * oc).enumerate() {
+            let y = t * rows + r;
+            for xx in 0..ow {
+                let d = &mut orow[xx * oc..(xx + 1) * oc];
+                for i in 0..b {
+                    for j in 0..b {
+                        let s = ((y * b + i) * x.w + xx * b + j) * x.c;
+                        for ch in 0..x.c {
+                            d[ch * b * b + i * b + j] = x.data[s + ch];
+                        }
                     }
                 }
             }
         }
-    }
+    });
     o
 }
 
