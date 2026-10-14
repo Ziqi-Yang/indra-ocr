@@ -33,10 +33,16 @@ pub struct NativeBackend {
 
 impl NativeBackend {
     pub fn new(dir: &Path, threads: usize, math: bool) -> Result<Self> {
+        Self::with_int8(dir, threads, math, false)
+    }
+
+    /// ``new``, with the recognizers' products in int8 when ``int8``.
+    pub fn with_int8(dir: &Path, threads: usize, math: bool, int8: bool) -> Result<Self> {
+        let load = |p: &Path| if int8 { Recognizer::load_int8(p) } else { Recognizer::load(p) };
         let par = std::sync::Arc::new(Par::new(threads));
         // the float recognizer (a quantized rec.int8.onnx is for ONNX Runtime)
         let rec_path = dir.join("rec.onnx");
-        let rec = Recognizer::load(&rec_path).map_err(err)?;
+        let rec = load(&rec_path).map_err(err)?;
         let (rec_cjk, script) = if dir.join("script.onnx").exists() && dir.join("rec_cjk.onnx").exists() {
             (
                 Some(Recognizer::load(&dir.join("rec_cjk.onnx")).map_err(err)?),

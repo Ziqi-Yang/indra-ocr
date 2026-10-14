@@ -73,6 +73,10 @@ struct Args {
     /// inference engine: native (indra-engine) or ort (ONNX Runtime)
     #[arg(long, default_value = "native")]
     engine: indra_ocr::Engine,
+    /// native engine: the recognizer in int8 on CPUs with AVX-512 VNNI (faster;
+    /// about 0.1% of characters read differently)
+    #[arg(long)]
+    int8: bool,
 }
 
 /// Python's str(Path(p)): no leading "./".
@@ -105,6 +109,7 @@ fn main() -> ExitCode {
             image_ocr: !a.no_image_ocr,
         },
         engine: a.engine,
+        int8: a.int8,
     };
     let ext = match a.format {
         Format::Md => ".md",

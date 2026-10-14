@@ -337,8 +337,15 @@ impl Ocr {
     /// The pipeline on the native engine with the models in ``dir``.
     #[cfg(feature = "native")]
     pub fn with_native(dir: &std::path::Path, threads: usize, opts: OcrOptions, math: bool) -> Result<Self> {
+        Self::with_native_int8(dir, threads, opts, math, false)
+    }
+
+    /// ``with_native``, the recognizer in int8 when ``int8`` (and the CPU has
+    /// AVX-512 VNNI).
+    #[cfg(feature = "native")]
+    pub fn with_native_int8(dir: &std::path::Path, threads: usize, opts: OcrOptions, math: bool, int8: bool) -> Result<Self> {
         let meta = Meta::load(dir)?;
-        let backend = crate::native_backend::NativeBackend::new(dir, threads, math)?;
+        let backend = crate::native_backend::NativeBackend::with_int8(dir, threads, math, int8)?;
         let reader = if math { Some(MathReader::load(dir)?) } else { None };
         Ok(Ocr::new(Box::new(backend), meta, opts, reader).with_threads(threads))
     }

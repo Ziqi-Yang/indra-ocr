@@ -105,6 +105,7 @@ impl Viewer {
                 ocr: OcrOptions { furniture, ..Default::default() },
                 convert: ConvertOptions::default(),
                 engine: self.a.engine,
+                int8: false,
             };
             let mut c = indra_ocr::load(&opts, self.a.threads).map_err(|e| e.to_string())?;
             // warm-up: the first call's allocations are not timed

@@ -46,6 +46,9 @@ pub struct LoadOptions {
     pub ocr: OcrOptions,
     pub convert: ConvertOptions,
     pub engine: Engine,
+    /// Native engine: the recognizer's products in int8 where the CPU has
+    /// AVX-512 VNNI (faster, ~0.1% of characters read differently).
+    pub int8: bool,
 }
 
 /// A ready Converter with ``threads`` inference threads.
@@ -57,7 +60,7 @@ pub fn load(opts: &LoadOptions, threads: usize) -> Result<Converter, OcrError> {
         #[cfg(not(feature = "ort"))]
         Engine::Ort => return Err(OcrError::Other("this build has no ONNX Runtime engine (feature \"ort\")".into())),
         #[cfg(feature = "native")]
-        Engine::Native => Ocr::with_native(&dir, threads.max(1), opts.ocr.clone(), opts.math)?,
+        Engine::Native => Ocr::with_native_int8(&dir, threads.max(1), opts.ocr.clone(), opts.math, opts.int8)?,
         #[cfg(not(feature = "native"))]
         Engine::Native => return Err(OcrError::Other("this build has no native engine (feature \"native\")".into())),
     };
