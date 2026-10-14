@@ -11,8 +11,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::gemm::{Act, Out, PackedB, gemm, gemm_par};
-use crate::par::Par;
 use crate::onnx::{Graph, Node};
+use crate::par::Par;
 use crate::simd::multiversion;
 use crate::{EngineError, Result};
 
@@ -144,7 +144,9 @@ impl Net {
             readers.entry(o.as_str()).or_default().push(usize::MAX);
         }
         let only_reader = |name: &str, i: usize| readers.get(name).is_some_and(|r| r.len() == 1 && r[0] == i);
-        let ints = |name: &str| -> Option<Vec<i64>> { g.tensors.get(name).map(|t| if t.i64.is_empty() { t.f32.iter().map(|&v| v as i64).collect() } else { t.i64.clone() }) };
+        let ints = |name: &str| -> Option<Vec<i64>> {
+            g.tensors.get(name).map(|t| if t.i64.is_empty() { t.f32.iter().map(|&v| v as i64).collect() } else { t.i64.clone() })
+        };
         let input_name = g.inputs.first().ok_or_else(|| EngineError::Model("graph has no input".into()))?.clone();
         let input = id(&input_name, &mut slot);
         let mut steps = vec![];
@@ -154,7 +156,9 @@ impl Net {
             if skip[i] {
                 continue;
             }
-            let inp = |k: usize, slot: &mut HashMap<String, usize>, id: &mut dyn FnMut(&str, &mut HashMap<String, usize>) -> usize| id(&n.inputs[k], slot);
+            let inp = |k: usize, slot: &mut HashMap<String, usize>, id: &mut dyn FnMut(&str, &mut HashMap<String, usize>) -> usize| {
+                id(&n.inputs[k], slot)
+            };
             match n.op.as_str() {
                 "Conv" => {
                     let kind = conv_kind(g, n)?;
@@ -209,7 +213,9 @@ impl Net {
                 }
                 "Resize" => {
                     if n.attrs.get("mode").is_some_and(|m| !matches!(m, crate::onnx::Attr::Str(s) if s == "nearest"))
-                        || n.attrs.get("coordinate_transformation_mode").is_some_and(|m| !matches!(m, crate::onnx::Attr::Str(s) if s == "asymmetric"))
+                        || n.attrs
+                            .get("coordinate_transformation_mode")
+                            .is_some_and(|m| !matches!(m, crate::onnx::Attr::Str(s) if s == "asymmetric"))
                         || n.attrs.get("nearest_mode").is_some_and(|m| !matches!(m, crate::onnx::Attr::Str(s) if s == "floor"))
                         || n.inputs.len() < 4
                     {
@@ -259,7 +265,11 @@ impl Net {
                     steps.push(if axis == 1 { Step::ConcatC { xs, out } } else { Step::ConcatI { xs, out } });
                 }
                 "AveragePool" | "MaxPool" => {
-                    if n.ints("kernel_shape") != Some(&[2, 2][..]) || n.ints("strides") != Some(&[2, 2][..]) || n.ints("pads").is_some_and(|p| p.iter().any(|&v| v != 0)) || n.int("ceil_mode").unwrap_or(0) != 0 {
+                    if n.ints("kernel_shape") != Some(&[2, 2][..])
+                        || n.ints("strides") != Some(&[2, 2][..])
+                        || n.ints("pads").is_some_and(|p| p.iter().any(|&v| v != 0))
+                        || n.int("ceil_mode").unwrap_or(0) != 0
+                    {
                         return Err(bad(n, "2x2 pools with stride 2 only"));
                     }
                     let x = inp(0, &mut slot, &mut id);
@@ -311,7 +321,11 @@ impl Net {
                 }
             }
         }
-        let outputs = g.outputs.iter().map(|o| slot.get(o.as_str()).copied().ok_or_else(|| EngineError::Model(format!("output {o} is never computed")))).collect::<Result<Vec<_>>>()?;
+        let outputs = g
+            .outputs
+            .iter()
+            .map(|o| slot.get(o.as_str()).copied().ok_or_else(|| EngineError::Model(format!("output {o} is never computed"))))
+            .collect::<Result<Vec<_>>>()?;
         let slots = next;
         let mut last_use = vec![0usize; slots];
         for (k, s) in steps.iter().enumerate() {
@@ -477,7 +491,9 @@ impl Net {
                 let n = xs.len() as i64;
                 Val::Ints(idx.iter().map(|&i| xs[(if i < 0 { i + n } else { i }) as usize]).collect())
             }
-            Step::ConcatI { xs, .. } => Val::Ints(xs.iter().map(|&x| self.ints(v, x).map(|s| s.to_vec())).collect::<Result<Vec<_>>>()?.concat()),
+            Step::ConcatI { xs, .. } => {
+                Val::Ints(xs.iter().map(|&x| self.ints(v, x).map(|s| s.to_vec())).collect::<Result<Vec<_>>>()?.concat())
+            }
             Step::SliceI { x, start, end, .. } => {
                 let xs = self.ints(v, *x)?;
                 let n = xs.len() as i64;
@@ -591,7 +607,6 @@ fn space_to_depth_chain(g: &Graph, i: usize) -> Option<Vec<usize>> {
     }
     Some(chain)
 }
-
 
 /// The convolution of a Conv node, prepared for its kind.
 pub(crate) fn conv_kind(g: &Graph, n: &Node) -> Result<ConvKind> {
@@ -712,7 +727,19 @@ pub(crate) fn conv(x: &Feat, kind: &ConvKind, act: Act, residual: Option<Feat>, 
 }
 
 #[allow(clippy::too_many_arguments)]
-fn im2col(x: &[f32], h: usize, w: usize, cin: usize, k: usize, stride: usize, pad: usize, r0: usize, rows: usize, ow: usize, out: &mut [f32]) {
+fn im2col(
+    x: &[f32],
+    h: usize,
+    w: usize,
+    cin: usize,
+    k: usize,
+    stride: usize,
+    pad: usize,
+    r0: usize,
+    rows: usize,
+    ow: usize,
+    out: &mut [f32],
+) {
     let kk = k * k * cin;
     for r in 0..rows {
         let oy = r0 + r;
@@ -740,7 +767,22 @@ fn im2col(x: &[f32], h: usize, w: usize, cin: usize, k: usize, stride: usize, pa
 /// full convolution of a 1-channel map).
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn dw_impl<const C: usize>(x: &[f32], h: usize, w: usize, c: usize, wt: &[f32], b: &[f32], k: usize, stride: usize, pad: usize, out: &mut [f32], oy0: usize, rows: usize, ow: usize, bcast: bool) {
+fn dw_impl<const C: usize>(
+    x: &[f32],
+    h: usize,
+    w: usize,
+    c: usize,
+    wt: &[f32],
+    b: &[f32],
+    k: usize,
+    stride: usize,
+    pad: usize,
+    out: &mut [f32],
+    oy0: usize,
+    rows: usize,
+    ow: usize,
+    bcast: bool,
+) {
     // C > 0: the channel count is known at compile time (straight vector code)
     let c = if C > 0 { C } else { c };
     let xc = if bcast { 1 } else { c };
@@ -899,7 +941,13 @@ pub(crate) fn pool2(x: &Feat, max: bool) -> Feat {
                     }
                     let src = &x.data[(sy * x.w + sx) * c..(sy * x.w + sx + 1) * c];
                     for ch in 0..c {
-                        dst[ch] = if n == 0 { src[ch] } else if max { dst[ch].max(src[ch]) } else { dst[ch] + src[ch] };
+                        dst[ch] = if n == 0 {
+                            src[ch]
+                        } else if max {
+                            dst[ch].max(src[ch])
+                        } else {
+                            dst[ch] + src[ch]
+                        };
                     }
                     n += 1;
                 }

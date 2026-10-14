@@ -152,11 +152,15 @@ pub struct MathDecoder {
 }
 
 /// Weighted MatMuls in graph order: (MatMul node, its bias Add's constant).
-fn linears<'a>(g: &'a Graph) -> Result<Vec<(&'a Tensor, &'a Tensor)>> {
+fn linears(g: &Graph) -> Result<Vec<(&Tensor, &Tensor)>> {
     g.ops("MatMul")
         .filter(|n| g.tensors.contains_key(n.inputs[1].as_str()))
         .map(|n| {
-            let add = g.nodes.iter().find(|a| a.op == "Add" && a.inputs.iter().any(|i| i == &n.outputs[0])).ok_or_else(|| bad("a MatMul without a bias"))?;
+            let add = g
+                .nodes
+                .iter()
+                .find(|a| a.op == "Add" && a.inputs.iter().any(|i| i == &n.outputs[0]))
+                .ok_or_else(|| bad("a MatMul without a bias"))?;
             let b = add.inputs.iter().find_map(|i| g.tensors.get(i.as_str())).ok_or_else(|| bad("a bias that is not a constant"))?;
             Ok((g.arg(n, 1)?, b))
         })
@@ -172,7 +176,10 @@ impl MathEncoder {
     pub fn from_graph(g: &Graph) -> Result<Self> {
         let convs: Vec<&Node> = g.ops("Conv").collect();
         // front: 2-D convs until the one with a (H, 1) kernel
-        let ci = convs.iter().position(|n| g.arg(n, 1).is_ok_and(|w| w.dims.len() == 4 && w.dims[3] == 1 && w.dims[2] > 1)).ok_or_else(|| bad("no column conv"))?;
+        let ci = convs
+            .iter()
+            .position(|n| g.arg(n, 1).is_ok_and(|w| w.dims.len() == 4 && w.dims[3] == 1 && w.dims[2] > 1))
+            .ok_or_else(|| bad("no column conv"))?;
         let front = convs[..ci].iter().map(|n| conv_kind(g, n)).collect::<Result<Vec<_>>>()?;
         let (cw, cb) = (g.arg(convs[ci], 1)?, g.arg(convs[ci], 2)?);
         let (c, cin, kh) = (cw.dims[0], cw.dims[1], cw.dims[2]);
@@ -197,7 +204,7 @@ impl MathEncoder {
         // attention layers
         let lns: Vec<&Node> = g.ops("LayerNormalization").collect();
         let lin = linears(g)?;
-        if lns.len() % 2 != 0 || lin.len() != 2 * lns.len() {
+        if !lns.len().is_multiple_of(2) || lin.len() != 2 * lns.len() {
             return Err(bad("unexpected encoder attention layers"));
         }
         let layers = (0..lns.len() / 2)
@@ -222,7 +229,8 @@ impl MathEncoder {
             .clone();
         let heads = slopes.len();
         // lengths from widths
-        let add = g.nodes.iter().find(|n| n.op == "Add" && n.inputs.iter().any(|i| i == "widths")).ok_or_else(|| bad("no widths -> lengths"))?;
+        let add =
+            g.nodes.iter().find(|n| n.op == "Add" && n.inputs.iter().any(|i| i == "widths")).ok_or_else(|| bad("no widths -> lengths"))?;
         let sub = g.nodes.iter().find(|n| n.op == "Sub" && n.inputs[0] == add.outputs[0]).ok_or_else(|| bad("no widths -> lengths"))?;
         let div = g.nodes.iter().find(|n| n.op == "Div" && n.inputs[0] == sub.outputs[0]).ok_or_else(|| bad("no widths -> lengths"))?;
         let sc = |n: &Node| -> Result<i64> {
@@ -230,7 +238,21 @@ impl MathEncoder {
             t.i64.first().copied().ok_or_else(|| bad("lengths constant"))
         };
         let height = kh << front.len();
-        Ok(MathEncoder { front, collapse, collapse_h: kh, blocks, c, e, layers, slopes, heads, len_add: sc(add)?, len_sub: sc(sub)?, len_div: sc(div)?, height })
+        Ok(MathEncoder {
+            front,
+            collapse,
+            collapse_h: kh,
+            blocks,
+            c,
+            e,
+            layers,
+            slopes,
+            heads,
+            len_add: sc(add)?,
+            len_sub: sc(sub)?,
+            len_div: sc(div)?,
+            height,
+        })
     }
 
     pub fn height(&self) -> usize {
@@ -323,7 +345,9 @@ impl MathDecoder {
             .map(|(n, w)| {
                 // the bias slice that follows it
                 let pos = g.nodes.iter().position(|m| std::ptr::eq(m, n)).unwrap();
-                let b = g.nodes[pos..].iter().find_map(|m| if m.op == "Slice" { g.tensors.get(m.inputs[0].as_str()).filter(|t| t.dims == [3 * d]) } else { None });
+                let b = g.nodes[pos..]
+                    .iter()
+                    .find_map(|m| if m.op == "Slice" { g.tensors.get(m.inputs[0].as_str()).filter(|t| t.dims == [3 * d]) } else { None });
                 b.map(|b| (w, b)).ok_or_else(|| bad("in_proj without a bias"))
             })
             .collect::<Result<Vec<_>>>()?;
@@ -412,7 +436,17 @@ impl MathDecoder {
             for (i, ls) in st.lines.iter().enumerate() {
                 let (kc, vc) = &ls.cross[li];
                 for h in 0..self.heads {
-                    attend(&q[i * d + h * hd..i * d + (h + 1) * hd], kc, vc, ls.t, d, h * hd, scale, |_| 0.0, &mut att[i * d + h * hd..i * d + (h + 1) * hd]);
+                    attend(
+                        &q[i * d + h * hd..i * d + (h + 1) * hd],
+                        kc,
+                        vc,
+                        ls.t,
+                        d,
+                        h * hd,
+                        scale,
+                        |_| 0.0,
+                        &mut att[i * d + h * hd..i * d + (h + 1) * hd],
+                    );
                 }
             }
             l.out2.add_into(&att, b, &mut x);

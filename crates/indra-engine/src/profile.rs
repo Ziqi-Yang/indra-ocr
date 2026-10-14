@@ -12,7 +12,7 @@ fn enabled() -> bool {
 }
 
 thread_local! {
-    static TOTALS: RefCell<BTreeMap<&'static str, (f64, u64)>> = RefCell::new(BTreeMap::new());
+    static TOTALS: RefCell<BTreeMap<&'static str, (f64, u64)>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 /// Laps of one run; does nothing unless profiling is on.

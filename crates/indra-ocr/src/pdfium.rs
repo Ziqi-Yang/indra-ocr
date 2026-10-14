@@ -12,7 +12,6 @@ use std::ffi::{CString, c_char, c_double, c_float, c_int, c_uint, c_ulong, c_voi
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-
 use crate::imgproc::Gray;
 use crate::io::InputError;
 
@@ -354,7 +353,18 @@ impl PageRef {
         let dev = |x: f64, y: f64| -> (f64, f64) {
             let (mut dx, mut dy) = (0, 0);
             unsafe {
-                (api.FPDF_PageToDevice)(self.0, 0, 0, (w * s).round_ties_even() as c_int, (h * s).round_ties_even() as c_int, 0, x, y, &mut dx, &mut dy)
+                (api.FPDF_PageToDevice)(
+                    self.0,
+                    0,
+                    0,
+                    (w * s).round_ties_even() as c_int,
+                    (h * s).round_ties_even() as c_int,
+                    0,
+                    x,
+                    y,
+                    &mut dx,
+                    &mut dy,
+                )
             };
             (dx as f64 / s, dy as f64 / s)
         };

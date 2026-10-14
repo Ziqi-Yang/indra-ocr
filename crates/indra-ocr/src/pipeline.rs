@@ -266,12 +266,7 @@ pub fn unrotate_box(b: [f64; 4], degrees: f64, wh: (usize, usize)) -> [f64; 4] {
     let ys = pts.map(|(x, y)| m[3] * x + m[4] * y + m[5]);
     let min = |v: [f64; 4]| v.into_iter().fold(f64::INFINITY, f64::min);
     let max = |v: [f64; 4]| v.into_iter().fold(f64::NEG_INFINITY, f64::max);
-    [
-        round1(min(xs).clamp(0.0, w)),
-        round1(min(ys).clamp(0.0, h)),
-        round1(max(xs).clamp(0.0, w)),
-        round1(max(ys).clamp(0.0, h)),
-    ]
+    [round1(min(xs).clamp(0.0, w)), round1(min(ys).clamp(0.0, h)), round1(max(xs).clamp(0.0, w)), round1(max(ys).clamp(0.0, h))]
 }
 
 /// [side, side] ink map (1 = ink): long side scaled to ``side``, padded.
@@ -415,8 +410,7 @@ impl Ocr {
                 RecModel::Cjk => self.vocab_cjk.as_ref().ok_or_else(|| OcrError::Other("meta.json has no vocab_cjk".into()))?,
             };
             for (&j, r) in sel.iter().zip(res) {
-                let keep: Vec<usize> =
-                    (0..r.ids.len()).filter(|&t| r.ids[t] != 0 && (t == 0 || r.ids[t] != r.ids[t - 1])).collect();
+                let keep: Vec<usize> = (0..r.ids.len()).filter(|&t| r.ids[t] != 0 && (t == 0 || r.ids[t] != r.ids[t - 1])).collect();
                 let [x0, _, x1, _] = boxes[j].map(|v| v as f64);
                 let (y0, y1) = (boxes[j][1] as f64, boxes[j][3] as f64);
                 let h = (y1 - y0).max(1.0);
@@ -498,11 +492,8 @@ impl Ocr {
                 }
                 let (gl, gr) = ((a + 0.35 * h) as f32, (c - 0.35 * h) as f32);
                 let tol = (0.5 * h) as f32;
-                let near = boxes
-                    .iter()
-                    .enumerate()
-                    .filter(|(k, o)| *k != i && ((o[2] - gl).abs() < tol || (o[0] - gr).abs() < tol))
-                    .count();
+                let near =
+                    boxes.iter().enumerate().filter(|(k, o)| *k != i && ((o[2] - gl).abs() < tol || (o[0] - gr).abs() < tol)).count();
                 if near >= GUTTER_EDGES {
                     mine.push((a + c) / 2.0);
                 }
@@ -722,16 +713,7 @@ impl Ocr {
             let cells: Cells = (0..boxes.len())
                 .map(|i| (i, self.split_line(boxes[i], &rec[i].toks, CELL_GAP, &[]).into_iter().map(|(b, t, _)| (b, t)).collect()))
                 .collect();
-            page.markdown = Some(page_markdown(
-                &boxes,
-                &texts,
-                &order,
-                &l.cls,
-                &l.same,
-                self.opts.furniture,
-                Some(&cells),
-                l.tab.as_ref(),
-            ));
+            page.markdown = Some(page_markdown(&boxes, &texts, &order, &l.cls, &l.same, self.opts.furniture, Some(&cells), l.tab.as_ref()));
         } else if boxes.len() < 2 {
             page.markdown = Some(texts.join("\n"));
         }

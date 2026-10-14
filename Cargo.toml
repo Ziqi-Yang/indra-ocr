@@ -25,3 +25,10 @@ lto = "thin"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+[workspace.lints.clippy]
+# numeric kernels index several arrays in step; FFI names follow pdfium's
+needless_range_loop = "allow"
+upper_case_acronyms = "allow"
+too_many_arguments = "allow"
+chunks_exact_to_as_chunks = "allow"

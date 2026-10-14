@@ -106,8 +106,8 @@ fn decode_jpeg(bytes: &[u8]) -> Option<Gray> {
 }
 
 fn decode_tiff(bytes: &[u8]) -> Option<Vec<Gray>> {
-    use tiff::decoder::{Decoder, DecodingResult};
     use tiff::ColorType;
+    use tiff::decoder::{Decoder, DecodingResult};
     let mut d = Decoder::new(Cursor::new(bytes)).ok()?;
     let mut frames = vec![];
     loop {
@@ -119,16 +119,19 @@ fn decode_tiff(bytes: &[u8]) -> Option<Vec<Gray>> {
         let gray: Vec<u8> = match (ct, img) {
             (ColorType::Gray(8), DecodingResult::U8(v)) => v,
             (ColorType::Gray(16), DecodingResult::U16(v)) => v.iter().map(|&x| (x >> 8) as u8).collect(),
-            (ColorType::GrayA(8), DecodingResult::U8(v)) => v.chunks_exact(2).map(|p| p[0]).collect(),
-            (ColorType::RGB(8), DecodingResult::U8(v)) => v.chunks_exact(3).map(|p| cv_gray(p[0], p[1], p[2])).collect(),
-            (ColorType::RGBA(8), DecodingResult::U8(v)) => v.chunks_exact(4).map(|p| cv_gray(p[0], p[1], p[2])).collect(),
+            (ColorType::GrayA(8), DecodingResult::U8(v)) => v.as_chunks::<2>().0.iter().map(|p| p[0]).collect(),
+            (ColorType::RGB(8), DecodingResult::U8(v)) => v.as_chunks::<3>().0.iter().map(|p| cv_gray(p[0], p[1], p[2])).collect(),
+            (ColorType::RGBA(8), DecodingResult::U8(v)) => v.as_chunks::<4>().0.iter().map(|p| cv_gray(p[0], p[1], p[2])).collect(),
             (ColorType::RGB(16), DecodingResult::U16(v)) => {
-                v.chunks_exact(3).map(|p| cv_gray((p[0] >> 8) as u8, (p[1] >> 8) as u8, (p[2] >> 8) as u8)).collect()
+                v.as_chunks::<3>().0.iter().map(|p| cv_gray((p[0] >> 8) as u8, (p[1] >> 8) as u8, (p[2] >> 8) as u8)).collect()
             }
             (ColorType::Gray(1), DecodingResult::U8(v)) => {
                 // bilevel: rows padded to whole bytes, 0 = black unless WhiteIsZero
                 let stride = w.div_ceil(8);
-                (0..h).flat_map(|y| (0..w).map(move |x| (y, x))).map(|(y, x)| if v[y * stride + x / 8] >> (7 - x % 8) & 1 == 1 { 255 } else { 0 }).collect()
+                (0..h)
+                    .flat_map(|y| (0..w).map(move |x| (y, x)))
+                    .map(|(y, x)| if v[y * stride + x / 8] >> (7 - x % 8) & 1 == 1 { 255 } else { 0 })
+                    .collect()
             }
             _ => return None,
         };

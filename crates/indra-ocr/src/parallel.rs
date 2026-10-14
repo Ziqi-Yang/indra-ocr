@@ -167,8 +167,7 @@ fn pooled(
     opts: &LoadOptions,
     mut f: impl FnMut(&Path, FileResult),
 ) -> Result<(), OcrError> {
-    let units: Vec<(usize, Unit)> =
-        plan.iter().filter_map(|u| u.as_ref().ok()).flatten().cloned().enumerate().collect();
+    let units: Vec<(usize, Unit)> = plan.iter().filter_map(|u| u.as_ref().ok()).flatten().cloned().enumerate().collect();
     let queue = Arc::new(Mutex::new(units.into_iter()));
     let (tx, rx) = mpsc::channel::<(usize, Result<Vec<(usize, Page)>, InputError>)>();
     // Each worker builds its own pipeline; the first model error stops the run.
@@ -226,7 +225,9 @@ fn pooled(
         let mut done: BTreeMap<usize, Result<Vec<(usize, Page)>, InputError>> = BTreeMap::new();
         let mut next_unit = 0;
         let mut files = paths.iter().zip(plan);
-        let mut pending: Option<(&PathBuf, usize, Vec<(usize, Page)>, Option<InputError>)> = None;
+        // the input being gathered: (path, units left, pages so far, first error)
+        type Pending<'a> = (&'a PathBuf, usize, Vec<(usize, Page)>, Option<InputError>);
+        let mut pending: Option<Pending> = None;
         let mut emit = |done: &mut BTreeMap<usize, _>, next_unit: &mut usize, pending: &mut Option<_>| loop {
             if pending.is_none() {
                 match files.next() {
@@ -251,10 +252,13 @@ fn pooled(
                 }
             }
             let (p, _, pages, err) = pending.take().unwrap();
-            f(p, match err {
-                Some(e) => Err(e),
-                None => Ok(pages),
-            });
+            f(
+                p,
+                match err {
+                    Some(e) => Err(e),
+                    None => Ok(pages),
+                },
+            );
         };
         emit(&mut done, &mut next_unit, &mut pending);
         for (k, r) in rx {

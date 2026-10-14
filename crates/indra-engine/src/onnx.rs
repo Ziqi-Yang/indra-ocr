@@ -146,11 +146,20 @@ fn tensor(b: &[u8]) -> Result<Tensor> {
     match dtype {
         FLOAT if !raw.is_empty() => t.f32 = raw.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect(),
         DOUBLE => {
-            let d: Vec<f64> = if raw.is_empty() { doubles } else { raw.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect() };
+            let d: Vec<f64> =
+                if raw.is_empty() { doubles } else { raw.chunks_exact(8).map(|c| f64::from_le_bytes(c.try_into().unwrap())).collect() };
             t.f32 = d.into_iter().map(|v| v as f32).collect();
         }
         INT64 if !raw.is_empty() => t.i64 = raw.chunks_exact(8).map(|c| i64::from_le_bytes(c.try_into().unwrap())).collect(),
-        INT32 | BOOL => t.i64 = if raw.is_empty() { i32s } else if dtype == BOOL { raw.iter().map(|&v| v as i64).collect() } else { raw.chunks_exact(4).map(|c| i32::from_le_bytes(c.try_into().unwrap()) as i64).collect() },
+        INT32 | BOOL => {
+            t.i64 = if raw.is_empty() {
+                i32s
+            } else if dtype == BOOL {
+                raw.iter().map(|&v| v as i64).collect()
+            } else {
+                raw.chunks_exact(4).map(|c| i32::from_le_bytes(c.try_into().unwrap()) as i64).collect()
+            }
+        }
         _ => {}
     }
     Ok(t)

@@ -75,7 +75,7 @@ impl Recognizer {
 
     pub fn from_graph(g: &Graph) -> Result<Self> {
         let convs: Vec<&Node> = g.ops("Conv").collect();
-        if convs.len() < 7 || (convs.len() - 2) % 5 != 0 {
+        if convs.len() < 7 || !(convs.len() - 2).is_multiple_of(5) {
             return Err(bad(format!("{} Conv nodes: not the recognizer architecture", convs.len())));
         }
         // stem: Conv [C, 1, H, PW] stride [H, PW], then BatchNormalization
@@ -117,7 +117,8 @@ impl Recognizer {
         }
         let head = PackedB::from_nk(&hw.f32, classes, c, Some(&hb.f32));
         // lengths from widths: Add, Sub, Div on the "widths" input
-        let add = g.nodes.iter().find(|n| n.op == "Add" && n.inputs.iter().any(|i| i == "widths")).ok_or_else(|| bad("no widths -> lengths"))?;
+        let add =
+            g.nodes.iter().find(|n| n.op == "Add" && n.inputs.iter().any(|i| i == "widths")).ok_or_else(|| bad("no widths -> lengths"))?;
         let sub = g.nodes.iter().find(|n| n.op == "Sub" && n.inputs[0] == add.outputs[0]).ok_or_else(|| bad("no widths -> lengths"))?;
         let div = g.nodes.iter().find(|n| n.op == "Div" && n.inputs[0] == sub.outputs[0]).ok_or_else(|| bad("no widths -> lengths"))?;
         let (len_add, len_sub, len_div) = (scalar_i64(g, add, 1)?, scalar_i64(g, sub, 1)?, scalar_i64(g, div, 1)?);
@@ -243,7 +244,7 @@ impl Recognizer {
 /// Residual blocks from their Conv nodes (5 per block: depthwise, expand,
 /// squeeze, excite, project): (blocks, expanded width).
 pub(crate) fn load_blocks(g: &Graph, convs: &[&Node], c: usize) -> Result<(Vec<Block>, usize)> {
-    if convs.len() % 5 != 0 {
+    if !convs.len().is_multiple_of(5) {
         return Err(bad("block convolutions are not in fives"));
     }
     let mut blocks = Vec::with_capacity(convs.len() / 5);
@@ -290,7 +291,16 @@ pub(crate) fn load_blocks(g: &Graph, convs: &[&Node], c: usize) -> Result<(Vec<B
 /// Run residual blocks on ``x`` [T, C] holding the lines ``segs`` ((start,
 /// length) in rows); ``d`` [T, C] and ``ex`` [T, E] are scratch.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_blocks(blocks: &[Block], segs: &[(usize, usize)], x: &mut [f32], d: &mut [f32], ex: &mut [f32], c: usize, e: usize, prof: &mut crate::profile::Timer) {
+pub(crate) fn run_blocks(
+    blocks: &[Block],
+    segs: &[(usize, usize)],
+    x: &mut [f32],
+    d: &mut [f32],
+    ex: &mut [f32],
+    c: usize,
+    e: usize,
+    prof: &mut crate::profile::Timer,
+) {
     let total: usize = segs.iter().map(|s| s.1).sum();
     let mut mean = vec![0f32; e];
     for b in blocks {

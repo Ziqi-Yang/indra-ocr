@@ -10,7 +10,8 @@ fn load_npy(p: &str) -> Gray {
     let hlen = u16::from_le_bytes([raw[8], raw[9]]) as usize;
     let header = std::str::from_utf8(&raw[10..10 + hlen]).unwrap();
     let s = &header[header.find("'shape': (").unwrap() + 10..];
-    let dims: Vec<usize> = s[..s.find(')').unwrap()].split(',').filter(|t| !t.trim().is_empty()).map(|t| t.trim().parse().unwrap()).collect();
+    let dims: Vec<usize> =
+        s[..s.find(')').unwrap()].split(',').filter(|t| !t.trim().is_empty()).map(|t| t.trim().parse().unwrap()).collect();
     Gray::from_vec(dims[1], dims[0], raw[10 + hlen..].to_vec())
 }
 

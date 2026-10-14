@@ -77,7 +77,8 @@ pub fn masked_windows(gray: &Gray, boxes: &[[f32; 4]], backend: &mut dyn Backend
         let paper = if w.data.is_empty() {
             255
         } else {
-            let sub: Vec<f64> = (0..w.h).step_by(4).flat_map(|y| (0..w.w).step_by(4).map(move |x| (x, y))).map(|(x, y)| w.at(x, y) as f64).collect();
+            let sub: Vec<f64> =
+                (0..w.h).step_by(4).flat_map(|y| (0..w.w).step_by(4).map(move |x| (x, y))).map(|(x, y)| w.at(x, y) as f64).collect();
             percentile(&sub, 90.0) as u8
         };
         if let Some(k) = k {

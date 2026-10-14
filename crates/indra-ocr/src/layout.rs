@@ -28,17 +28,10 @@ pub fn join_lines<S: AsRef<str>>(texts: &[S]) -> String {
         let Some(first) = t.chars().next() else { continue };
         let mut rev = out.chars().rev();
         let (last, prev) = (rev.next(), rev.next());
-        if out.chars().count() > 1
-            && last == Some('-')
-            && prev.is_some_and(is_alpha)
-            && is_alpha(first)
-            && is_lower(first)
-        {
+        if out.chars().count() > 1 && last == Some('-') && prev.is_some_and(is_alpha) && is_alpha(first) && is_lower(first) {
             out.pop();
             out.push_str(t);
-        } else if last.is_some_and(is_cjk) && is_cjk(first) {
-            out.push_str(t);
-        } else if out.is_empty() {
+        } else if out.is_empty() || (last.is_some_and(is_cjk) && is_cjk(first)) {
             out.push_str(t);
         } else {
             out.push(' ');
@@ -326,8 +319,7 @@ pub fn table_html_heads(boxes: &[[f32; 4]], texts: &[String], tab: &[Mat; 3]) ->
             col_of[c] = k;
         }
     }
-    let centers: Vec<f32> =
-        cols.iter().map(|g| median_f32(&g.iter().map(|&c| (cb[c][0] + cb[c][2]) / 2.0).collect::<Vec<_>>())).collect();
+    let centers: Vec<f32> = cols.iter().map(|g| median_f32(&g.iter().map(|&c| (cb[c][0] + cb[c][2]) / 2.0).collect::<Vec<_>>())).collect();
     let h = median_height(boxes);
     let mut grid: std::collections::BTreeMap<(usize, usize), (usize, String)> = Default::default();
     for c in 0..m {
@@ -488,9 +480,6 @@ mod tests {
     fn simple_table() {
         let boxes = [[0., 0., 10., 10.], [50., 0., 60., 10.], [0., 20., 10., 30.], [50., 20., 60., 30.]];
         let texts: Vec<String> = ["A", "B", "1", "2<3"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(
-            table_html(&boxes, &texts),
-            "<table>\n<tr><th>A</th><th>B</th></tr>\n<tr><td>1</td><td>2&lt;3</td></tr>\n</table>"
-        );
+        assert_eq!(table_html(&boxes, &texts), "<table>\n<tr><th>A</th><th>B</th></tr>\n<tr><td>1</td><td>2&lt;3</td></tr>\n</table>");
     }
 }

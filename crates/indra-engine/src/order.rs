@@ -127,7 +127,11 @@ impl OrderNet {
         // Fourier features: Slice(feats, 0..n_four) * freqs -> sin, cos
         let slice = g.nodes.iter().find(|n| n.op == "Slice" && n.inputs[0] == "feats").ok_or_else(|| bad("no Fourier slice"))?;
         let n_four = g.arg(slice, 2)?.i64[0] as usize;
-        let mul = g.nodes.iter().find(|n| n.op == "Mul" && n.inputs.iter().any(|i| g.tensors.get(i.as_str()).is_some_and(|t| t.len() > 1))).ok_or_else(|| bad("no Fourier frequencies"))?;
+        let mul = g
+            .nodes
+            .iter()
+            .find(|n| n.op == "Mul" && n.inputs.iter().any(|i| g.tensors.get(i.as_str()).is_some_and(|t| t.len() > 1)))
+            .ok_or_else(|| bad("no Fourier frequencies"))?;
         let freqs = mul.inputs.iter().find_map(|i| g.tensors.get(i.as_str()).filter(|t| t.len() > 1)).unwrap().f32.clone();
         let emb1 = lin(mms[0])?;
         let n_feats = emb1.w.k - n_four * 2 * freqs.len();
@@ -135,7 +139,14 @@ impl OrderNet {
         let mut layers = vec![];
         for l in 0..n_layers {
             let m = &mms[2 + 4 * l..6 + 4 * l];
-            layers.push(Layer { ln1: norm(lns[2 * l])?, qkv: lin(m[0])?, proj: lin(m[1])?, ln2: norm(lns[2 * l + 1])?, ff1: lin(m[2])?, ff2: lin(m[3])? });
+            layers.push(Layer {
+                ln1: norm(lns[2 * l])?,
+                qkv: lin(m[0])?,
+                proj: lin(m[1])?,
+                ln2: norm(lns[2 * l + 1])?,
+                ff1: lin(m[2])?,
+                ff2: lin(m[3])?,
+            });
         }
         // attention heads: Reshape to [B, N, 3, heads, d / heads]
         let heads = g
@@ -242,7 +253,9 @@ impl OrderNet {
         let s = (1.0 / (hd as f32).sqrt()).sqrt();
         let mut out = vec![0f32; n * d];
         for h in 0..self.heads {
-            let part = |which: usize| -> Vec<f32> { (0..n).flat_map(|i| qkv[i * 3 * d + which * d + h * hd..i * 3 * d + which * d + (h + 1) * hd].to_vec()).collect() };
+            let part = |which: usize| -> Vec<f32> {
+                (0..n).flat_map(|i| qkv[i * 3 * d + which * d + h * hd..i * 3 * d + which * d + (h + 1) * hd].to_vec()).collect()
+            };
             let (q, k, v) = (part(0), part(1), part(2));
             let q: Vec<f32> = q.iter().map(|x| x * s).collect();
             let k: Vec<f32> = k.iter().map(|x| x * s).collect();
@@ -279,4 +292,3 @@ fn bilinear(u: &[f32], v: &[f32], n: usize, d: usize, scale: f32) -> Vec<f32> {
     }
     m
 }
-

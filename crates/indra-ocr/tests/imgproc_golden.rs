@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::{golden, Npy};
+use common::{Npy, golden};
 use indra_ocr::imgproc::*;
 
 fn load_case(dir: &std::path::Path, name: &str, arr: &str) -> Npy {
@@ -26,8 +26,7 @@ fn diff_u8(a: &[u8], b: &[u8]) -> (usize, i32) {
 #[test]
 fn opencv_parity() {
     let Some(dir) = golden("cv") else { return };
-    let manifest: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.join("manifest.json")).unwrap()).unwrap();
     let mut report = vec![];
     let mut worst = 0i32;
     for case in manifest["cases"].as_array().unwrap() {

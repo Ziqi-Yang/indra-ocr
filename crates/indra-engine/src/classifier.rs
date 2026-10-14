@@ -62,7 +62,12 @@ impl LineClassifier {
         let div = g
             .nodes
             .iter()
-            .find(|n| n.op == "Div" && n.inputs.iter().any(|i| i.contains("widths") || g.nodes.iter().any(|m| m.outputs[0] == *i && m.inputs.iter().any(|x| x == "widths"))))
+            .find(|n| {
+                n.op == "Div"
+                    && n.inputs.iter().any(|i| {
+                        i.contains("widths") || g.nodes.iter().any(|m| m.outputs[0] == *i && m.inputs.iter().any(|x| x == "widths"))
+                    })
+            })
             .ok_or_else(|| bad("no widths division"))?;
         let d = g.arg(div, 1)?;
         let div = d.i64.first().copied().or(d.f32.first().map(|&v| v as i64)).ok_or_else(|| bad("widths divisor"))?;

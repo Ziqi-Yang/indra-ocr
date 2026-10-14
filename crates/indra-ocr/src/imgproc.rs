@@ -271,11 +271,7 @@ fn area_tab(ssize: usize, dsize: usize, scale: f64) -> Vec<AreaTab> {
             tab.push(AreaTab { di: dx, si: sx as usize, alpha: (1.0 / cell) as f32 });
         }
         if fsx2 - sx2 as f64 > 1e-3 {
-            tab.push(AreaTab {
-                di: dx,
-                si: sx2 as usize,
-                alpha: ((fsx2 - sx2 as f64).min(1.0).min(cell) / cell) as f32,
-            });
+            tab.push(AreaTab { di: dx, si: sx2 as usize, alpha: ((fsx2 - sx2 as f64).min(1.0).min(cell) / cell) as f32 });
         }
     }
     tab
@@ -445,7 +441,14 @@ fn tap<T: WarpPixel, const INK: bool>(v: T) -> f32 {
 /// result), written as floats from ``x0``. Returns how many it wrote.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn warp_row_avx2<T: WarpPixel, const INK: bool>(src: &Image<T>, mi: &[f32; 6], mx: f32, my: f32, x0: usize, out: &mut [f32]) -> usize {
+unsafe fn warp_row_avx2<T: WarpPixel, const INK: bool>(
+    src: &Image<T>,
+    mi: &[f32; 6],
+    mx: f32,
+    my: f32,
+    x0: usize,
+    out: &mut [f32],
+) -> usize {
     use std::arch::x86_64::*;
     let (sw, sh) = (src.w as i32, src.h as i32);
     let len = src.data.len() as i64;
@@ -517,7 +520,15 @@ unsafe fn warp_row_avx2<T: WarpPixel, const INK: bool>(src: &Image<T>, mi: &[f32
 /// inverted matrix in float32, one fused multiply-add per coordinate);
 /// ``border`` taps read ``value`` (in the float domain).
 #[inline(always)]
-fn warp_rows_impl<T: WarpPixel, const SIMD: bool, const INK: bool>(src: &Image<T>, m: &[f64; 6], w: usize, h: usize, border: Border, value: f32, mut row: impl FnMut(usize, &[f32])) {
+fn warp_rows_impl<T: WarpPixel, const SIMD: bool, const INK: bool>(
+    src: &Image<T>,
+    m: &[f64; 6],
+    w: usize,
+    h: usize,
+    border: Border,
+    value: f32,
+    mut row: impl FnMut(usize, &[f32]),
+) {
     let mi = invert_affine(m).map(|v| v as f32);
     let (sw, sh) = (src.w as i64, src.h as i64);
     let d = &src.data;
@@ -555,7 +566,14 @@ fn warp_rows_impl<T: WarpPixel, const SIMD: bool, const INK: bool>(src: &Image<T
             let (ix, iy) = (fx as i64, fy as i64);
             buf[x] = if ix >= 0 && iy >= 0 && ix < sw - 1 && iy < sh - 1 {
                 let i = iy as usize * src.w + ix as usize;
-                bilinear_f32(tap::<T, INK>(d[i]), tap::<T, INK>(d[i + 1]), tap::<T, INK>(d[i + src.w]), tap::<T, INK>(d[i + src.w + 1]), a, b)
+                bilinear_f32(
+                    tap::<T, INK>(d[i]),
+                    tap::<T, INK>(d[i + 1]),
+                    tap::<T, INK>(d[i + src.w]),
+                    tap::<T, INK>(d[i + src.w + 1]),
+                    a,
+                    b,
+                )
             } else if border == Border::Constant && (ix >= sw || ix + 1 < 0 || iy >= sh || iy + 1 < 0) {
                 value
             } else {
@@ -571,11 +589,27 @@ fn warp_rows_impl<T: WarpPixel, const SIMD: bool, const INK: bool>(src: &Image<T
 /// part of the result, so without FMA they run in software).
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn warp_rows_fma<T: WarpPixel, const INK: bool>(src: &Image<T>, m: &[f64; 6], w: usize, h: usize, border: Border, value: f32, row: impl FnMut(usize, &[f32])) {
+unsafe fn warp_rows_fma<T: WarpPixel, const INK: bool>(
+    src: &Image<T>,
+    m: &[f64; 6],
+    w: usize,
+    h: usize,
+    border: Border,
+    value: f32,
+    row: impl FnMut(usize, &[f32]),
+) {
     warp_rows_impl::<T, true, INK>(src, m, w, h, border, value, row)
 }
 
-fn warp_rows<T: WarpPixel, const INK: bool>(src: &Image<T>, m: &[f64; 6], w: usize, h: usize, border: Border, value: f32, row: impl FnMut(usize, &[f32])) {
+fn warp_rows<T: WarpPixel, const INK: bool>(
+    src: &Image<T>,
+    m: &[f64; 6],
+    w: usize,
+    h: usize,
+    border: Border,
+    value: f32,
+    row: impl FnMut(usize, &[f32]),
+) {
     #[cfg(target_arch = "x86_64")]
     if std::arch::is_x86_feature_detected!("fma") && std::arch::is_x86_feature_detected!("avx2") {
         // SAFETY: the CPU has the features the function is compiled for.

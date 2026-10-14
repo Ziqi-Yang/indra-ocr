@@ -59,11 +59,7 @@ impl Vocab {
             // "\alpha" + "x" must not read back as "\alphax"
             let nxt = toks.get(k + 1).copied().unwrap_or("");
             let mut tc = t.chars();
-            if t.chars().count() > 2
-                && tc.next() == Some('\\')
-                && str_is_alpha(tc.as_str())
-                && nxt.chars().next().is_some_and(is_alpha)
-            {
+            if t.chars().count() > 2 && tc.next() == Some('\\') && str_is_alpha(tc.as_str()) && nxt.chars().next().is_some_and(is_alpha) {
                 out.push(' ');
             }
         }

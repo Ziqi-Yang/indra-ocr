@@ -129,7 +129,9 @@ pub fn gemm(a: &[f32], lda: usize, m: usize, b: &PackedB, c: &mut [f32], ldc: us
                 let rows = mr.min(i1 - r0);
                 if rows == mr && cols == nr {
                     // SAFETY: the tile lies inside A and C (asserted above).
-                    unsafe { kernel(b.isa, nr, k, a.as_ptr().add(r0 * lda), lda, bp, bias, c.as_mut_ptr().add(r0 * ldc + p * nr), ldc, act, out) };
+                    unsafe {
+                        kernel(b.isa, nr, k, a.as_ptr().add(r0 * lda), lda, bp, bias, c.as_mut_ptr().add(r0 * ldc + p * nr), ldc, act, out)
+                    };
                 } else {
                     atmp.fill(0.0);
                     for r in 0..rows {
@@ -174,7 +176,19 @@ pub fn gemm_par(par: &crate::par::Par, a: &[f32], lda: usize, m: usize, b: &Pack
 /// tile at stride ldc, and the CPU supports ``isa``.
 #[allow(clippy::too_many_arguments)]
 #[inline]
-unsafe fn kernel(isa: Isa, nr: usize, k: usize, a: *const f32, lda: usize, b: &[f32], bias: &[f32], c: *mut f32, ldc: usize, act: Act, out: Out) {
+unsafe fn kernel(
+    isa: Isa,
+    nr: usize,
+    k: usize,
+    a: *const f32,
+    lda: usize,
+    b: &[f32],
+    bias: &[f32],
+    c: *mut f32,
+    ldc: usize,
+    act: Act,
+    out: Out,
+) {
     let (b, bias) = (b.as_ptr(), bias.as_ptr());
     unsafe {
         match (isa, nr) {
@@ -209,7 +223,17 @@ pub(crate) fn act_scalar(v: f32, act: Act) -> f32 {
 }
 
 #[allow(clippy::too_many_arguments)]
-unsafe fn tile_scalar<const MR: usize, const NR: usize>(k: usize, a: *const f32, lda: usize, b: *const f32, bias: *const f32, c: *mut f32, ldc: usize, act: Act, out: Out) {
+unsafe fn tile_scalar<const MR: usize, const NR: usize>(
+    k: usize,
+    a: *const f32,
+    lda: usize,
+    b: *const f32,
+    bias: *const f32,
+    c: *mut f32,
+    ldc: usize,
+    act: Act,
+    out: Out,
+) {
     let mut acc = [[0f32; NR]; MR];
     unsafe {
         for kk in 0..k {
@@ -254,7 +278,17 @@ mod x86 {
     /// MR rows x NV zmm vectors (NR = 16 NV).
     #[target_feature(enable = "avx512f,avx2,fma")]
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn tile_z<const MR: usize, const NV: usize>(k: usize, a: *const f32, lda: usize, b: *const f32, bias: *const f32, c: *mut f32, ldc: usize, act: Act, out: Out) {
+    pub unsafe fn tile_z<const MR: usize, const NV: usize>(
+        k: usize,
+        a: *const f32,
+        lda: usize,
+        b: *const f32,
+        bias: *const f32,
+        c: *mut f32,
+        ldc: usize,
+        act: Act,
+        out: Out,
+    ) {
         unsafe {
             let mut acc = [[_mm512_setzero_ps(); NV]; MR];
             let mut bp = b;
@@ -304,7 +338,17 @@ mod x86 {
     /// MR rows x NV ymm vectors (NR = 8 NV).
     #[target_feature(enable = "avx2,fma")]
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn tile_y<const MR: usize, const NV: usize>(k: usize, a: *const f32, lda: usize, b: *const f32, bias: *const f32, c: *mut f32, ldc: usize, act: Act, out: Out) {
+    pub unsafe fn tile_y<const MR: usize, const NV: usize>(
+        k: usize,
+        a: *const f32,
+        lda: usize,
+        b: *const f32,
+        bias: *const f32,
+        c: *mut f32,
+        ldc: usize,
+        act: Act,
+        out: Out,
+    ) {
         unsafe {
             let mut acc = [[_mm256_setzero_ps(); NV]; MR];
             let mut bp = b;
@@ -360,7 +404,17 @@ mod arm {
     /// MR rows x NV q vectors (NR = 4 NV).
     #[target_feature(enable = "neon")]
     #[allow(clippy::too_many_arguments)]
-    pub unsafe fn tile_q<const MR: usize, const NV: usize>(k: usize, a: *const f32, lda: usize, b: *const f32, bias: *const f32, c: *mut f32, ldc: usize, act: Act, out: Out) {
+    pub unsafe fn tile_q<const MR: usize, const NV: usize>(
+        k: usize,
+        a: *const f32,
+        lda: usize,
+        b: *const f32,
+        bias: *const f32,
+        c: *mut f32,
+        ldc: usize,
+        act: Act,
+        out: Out,
+    ) {
         unsafe {
             let mut acc = [[vdupq_n_f32(0.0); NV]; MR];
             let mut bp = b;
@@ -418,7 +472,9 @@ mod tests {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             ((seed >> 40) as f32 / (1u64 << 24) as f32) - 0.5
         };
-        for &(m, k, n) in &[(1, 1, 1), (13, 128, 256), (97, 256, 128), (5, 33, 1678), (200, 64, 17), (50, 16, 4), (31, 24, 12), (40, 48, 24), (9, 7, 40)] {
+        for &(m, k, n) in
+            &[(1, 1, 1), (13, 128, 256), (97, 256, 128), (5, 33, 1678), (200, 64, 17), (50, 16, 4), (31, 24, 12), (40, 48, 24), (9, 7, 40)]
+        {
             let a: Vec<f32> = (0..m * k).map(|_| rnd()).collect();
             let w: Vec<f32> = (0..n * k).map(|_| rnd()).collect();
             let bias: Vec<f32> = (0..n).map(|_| rnd()).collect();

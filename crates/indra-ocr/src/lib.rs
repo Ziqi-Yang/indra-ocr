@@ -14,11 +14,11 @@ pub mod models;
 #[cfg(feature = "native")]
 pub mod native_backend;
 pub mod order_post;
-#[cfg(feature = "pdf")]
-pub mod pdfium;
 #[cfg(feature = "ort")]
 pub mod ort_backend;
 pub mod parallel;
+#[cfg(feature = "pdf")]
+pub mod pdfium;
 pub mod pipeline;
 pub mod py;
 pub mod pyjson;

@@ -9,8 +9,7 @@ pub const HF_REPO: &str = "datalab-to/indra-ocr";
 /// Model set this crate was built and tested against (a tag in HF_REPO).
 pub const HF_REVISION: &str = "v3.1";
 pub const FILES: [&str; 4] = ["det.onnx", "rec.onnx", "order.onnx", "meta.json"];
-pub const MATH_FILES: [&str; 5] =
-    ["mathcls.onnx", "math_enc.onnx", "math_dec_init.onnx", "math_dec_step.onnx", "math_meta.json"];
+pub const MATH_FILES: [&str; 5] = ["mathcls.onnx", "math_enc.onnx", "math_dec_init.onnx", "math_dec_step.onnx", "math_meta.json"];
 
 /// The models are not available: a download failed, or a local model folder
 /// lacks files.
@@ -119,9 +118,7 @@ impl Meta {
         let p = dir.join("meta.json");
         let s = std::fs::read_to_string(&p).map_err(|e| ModelError(format!("{}: {e}", p.display())))?;
         let v: serde_json::Value = serde_json::from_str(&s).map_err(|e| ModelError(format!("{}: {e}", p.display())))?;
-        let int = |k: &str| {
-            v[k].as_u64().map(|x| x as usize).ok_or_else(|| ModelError(format!("{}: no {k}", p.display())))
-        };
+        let int = |k: &str| v[k].as_u64().map(|x| x as usize).ok_or_else(|| ModelError(format!("{}: no {k}", p.display())));
         let vocab = |k: &str| -> Result<Option<Vocab>, ModelError> {
             match v.get(k).and_then(|x| x.as_str()) {
                 None => Ok(None),

@@ -117,7 +117,8 @@ fn stages_match_python() {
             failures.push(format!("{name}: {} lines vs {}", gl.len(), wl.len()));
         } else {
             for (i, (a, b)) in gl.iter().zip(wl).enumerate() {
-                if a["text"] != b["text"] || a["box"] != b["box"] || !close(a["conf"].as_f64().unwrap(), b["conf"].as_f64().unwrap(), 2e-4) {
+                if a["text"] != b["text"] || a["box"] != b["box"] || !close(a["conf"].as_f64().unwrap(), b["conf"].as_f64().unwrap(), 2e-4)
+                {
                     failures.push(format!("{name}: page line {i}: {a} vs {b}"));
                     break;
                 }

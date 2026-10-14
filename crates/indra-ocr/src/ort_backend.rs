@@ -5,8 +5,8 @@
 use std::path::Path;
 use std::sync::OnceLock;
 
-use ort::ep::CPU;
 use ort::environment::Environment;
+use ort::ep::CPU;
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::value::Tensor;
@@ -163,11 +163,7 @@ impl Backend for OrtBackend {
             Ok((0..part.len())
                 .map(|k| {
                     let n = (lengths[k].max(0) as usize).min(t);
-                    RecOut {
-                        ids: ids[k * t..k * t + n].iter().map(|&v| v as u32).collect(),
-                        conf: conf[k * t..k * t + n].to_vec(),
-                        stride,
-                    }
+                    RecOut { ids: ids[k * t..k * t + n].iter().map(|&v| v as u32).collect(), conf: conf[k * t..k * t + n].to_vec(), stride }
                 })
                 .collect())
         })

@@ -7,18 +7,8 @@ pub const N_GEOM: usize = 10;
 pub const N_TEXT: usize = 6;
 pub const N_FEATS: usize = N_GEOM + N_TEXT;
 
-pub const BLOCK_CLASSES: [&str; 10] = [
-    "Text",
-    "Section-Header",
-    "Page-Header",
-    "Page-Footer",
-    "List-Group",
-    "Table",
-    "Caption",
-    "Footnote",
-    "Table-Of-Contents",
-    "Form",
-];
+pub const BLOCK_CLASSES: [&str; 10] =
+    ["Text", "Section-Header", "Page-Header", "Page-Footer", "List-Group", "Table", "Caption", "Footnote", "Table-Of-Contents", "Form"];
 pub const GRID_LABELS: [&str; 3] = ["Table", "Form", "Table-Of-Contents"];
 
 pub fn class_id(label: &str) -> usize {

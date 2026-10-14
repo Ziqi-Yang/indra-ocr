@@ -45,10 +45,7 @@ pub fn readable(ocr: &Ocr, runs: &[TextLine]) -> bool {
     if letters.is_empty() {
         return true;
     }
-    let known = letters
-        .iter()
-        .filter(|&&c| ocr.vocab.has_char(c) || ocr.vocab_cjk.as_ref().is_some_and(|v| v.has_char(c)))
-        .count();
+    let known = letters.iter().filter(|&&c| ocr.vocab.has_char(c) || ocr.vocab_cjk.as_ref().is_some_and(|v| v.has_char(c))).count();
     known as f64 >= READABLE_MIN * letters.len() as f64
 }
 
@@ -351,7 +348,9 @@ mod pdf_pages {
         /// content order (its first character's index).
         fn read_math(&mut self, gray: &Gray, boxes: &[[f32; 4]], rec: &mut [Option<RecLine>]) -> crate::pipeline::Result<()> {
             let idx: Vec<usize> = (0..rec.len())
-                .filter(|&i| rec[i].as_ref().is_some_and(|r| r.toks.first().is_some_and(|t| matches!(t.v, TokVal::Str(_)) && t.idx.is_some())))
+                .filter(|&i| {
+                    rec[i].as_ref().is_some_and(|r| r.toks.first().is_some_and(|t| matches!(t.v, TokVal::Str(_)) && t.idx.is_some()))
+                })
                 .collect();
             if idx.is_empty() {
                 return Ok(());

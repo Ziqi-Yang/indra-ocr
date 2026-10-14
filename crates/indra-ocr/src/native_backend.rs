@@ -37,7 +37,10 @@ impl NativeBackend {
         let rec_path = if dir.join("rec.int8.onnx").exists() { dir.join("rec.int8.onnx") } else { dir.join("rec.onnx") };
         let rec = Recognizer::load(&rec_path).map_err(err)?;
         let (rec_cjk, script) = if dir.join("script.onnx").exists() && dir.join("rec_cjk.onnx").exists() {
-            (Some(Recognizer::load(&dir.join("rec_cjk.onnx")).map_err(err)?), Some(LineClassifier::load(&dir.join("script.onnx")).map_err(err)?))
+            (
+                Some(Recognizer::load(&dir.join("rec_cjk.onnx")).map_err(err)?),
+                Some(LineClassifier::load(&dir.join("script.onnx")).map_err(err)?),
+            )
         } else {
             (None, None)
         };

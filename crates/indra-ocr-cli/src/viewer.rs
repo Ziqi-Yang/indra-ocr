@@ -98,7 +98,7 @@ impl Viewer {
     /// The converter for these options (built on first use: the math models
     /// download then).
     fn conv<'a>(&self, st: &'a mut State, math: bool, furniture: bool) -> Result<&'a mut Converter, String> {
-        if !st.convs.contains_key(&(math, furniture)) {
+        if let std::collections::hash_map::Entry::Vacant(e) = st.convs.entry((math, furniture)) {
             let opts = LoadOptions {
                 model_dir: self.a.model_dir.clone(),
                 math,
@@ -109,7 +109,7 @@ impl Viewer {
             let mut c = indra_ocr::load(&opts, self.a.threads).map_err(|e| e.to_string())?;
             // warm-up: the first call's allocations are not timed
             let _ = c.ocr.ocr(&Gray::filled(200, 200, 255), true);
-            st.convs.insert((math, furniture), c);
+            e.insert(c);
         }
         Ok(st.convs.get_mut(&(math, furniture)).unwrap())
     }
@@ -258,7 +258,9 @@ fn respond(req: tiny_http::Request, code: u16, body: Vec<u8>, ctype: &str) {
 fn handle(v: &Viewer, mut req: tiny_http::Request) {
     let url = req.url().to_string();
     match (req.method(), url.as_str()) {
-        (tiny_http::Method::Get, "/" | "/index.html") => respond(req, 200, PAGE.replace("__LOGO__", LOGO.trim()).into_bytes(), "text/html; charset=utf-8"),
+        (tiny_http::Method::Get, "/" | "/index.html") => {
+            respond(req, 200, PAGE.replace("__LOGO__", LOGO.trim()).into_bytes(), "text/html; charset=utf-8")
+        }
         (tiny_http::Method::Get, "/info") => {
             let info = json!({"tesseract": v.a.tesseract, "version": env!("CARGO_PKG_VERSION"), "defaults": v.defaults});
             respond(req, 200, info.to_string().into_bytes(), "application/json")

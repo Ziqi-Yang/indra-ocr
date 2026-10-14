@@ -39,7 +39,8 @@ fn recognizer_matches_ort() {
         let ba = indra_ocr::det_post::decode(&da.data, da.h, da.w, 0.5, 2);
         let bb = indra_ocr::det_post::decode(&db.data, db.h, db.w, 0.5, 2);
         box_total += ba.len();
-        box_same += (ba.len() == bb.len()) as usize * ba.iter().zip(&bb).filter(|(p, q)| p.xyxy().iter().zip(q.xyxy()).all(|(u, v)| (u - v).abs() < 0.01)).count();
+        box_same += (ba.len() == bb.len()) as usize
+            * ba.iter().zip(&bb).filter(|(p, q)| p.xyxy().iter().zip(q.xyxy()).all(|(u, v)| (u - v).abs() < 0.01)).count();
         let oi = indra_ocr::pipeline::orient_input(&g, 768);
         let (oa, ob) = (ort.orient(&oi).unwrap(), native.orient(&oi).unwrap());
         orient_worst = orient_worst.max(oa.iter().zip(&ob).map(|(p, q)| (p - q).abs()).fold(0f32, f32::max));
@@ -47,8 +48,13 @@ fn recognizer_matches_ort() {
         if boxes.len() >= 2 {
             let f = indra_ocr::order_post::line_features(&boxes, (g.w, g.h), None);
             let (oa, ob) = (ort.order(&f, boxes.len()).unwrap(), native.order(&f, boxes.len()).unwrap());
-            let diff = |x: &indra_ocr::order_post::Mat, y: &indra_ocr::order_post::Mat| x.data.iter().zip(&y.data).map(|(p, q)| (p - q).abs()).fold(0f32, f32::max);
-            order_worst = order_worst.max(diff(&oa.a, &ob.a)).max(diff(oa.same.as_ref().unwrap(), ob.same.as_ref().unwrap())).max(diff(oa.cls.as_ref().unwrap(), ob.cls.as_ref().unwrap()));
+            let diff = |x: &indra_ocr::order_post::Mat, y: &indra_ocr::order_post::Mat| {
+                x.data.iter().zip(&y.data).map(|(p, q)| (p - q).abs()).fold(0f32, f32::max)
+            };
+            order_worst = order_worst
+                .max(diff(&oa.a, &ob.a))
+                .max(diff(oa.same.as_ref().unwrap(), ob.same.as_ref().unwrap()))
+                .max(diff(oa.cls.as_ref().unwrap(), ob.cls.as_ref().unwrap()));
             for k in 0..3 {
                 order_worst = order_worst.max(diff(&oa.tab.as_ref().unwrap()[k], &ob.tab.as_ref().unwrap()[k]));
             }
@@ -77,7 +83,9 @@ fn recognizer_matches_ort() {
             }
         }
     }
-    eprintln!("detector: max output diff {det_worst:.2e}, {box_same}/{box_total} boxes within 0.01 px; orientation: max diff {orient_worst:.2e}");
+    eprintln!(
+        "detector: max output diff {det_worst:.2e}, {box_same}/{box_total} boxes within 0.01 px; orientation: max diff {orient_worst:.2e}"
+    );
     eprintln!("order: max logit diff {order_worst:.2e}, {order_sign} pair signs differ");
     assert!(order_worst < 1e-2, "order model differs by {order_worst}");
     eprintln!("script: max diff {script_worst:.2e}, {script_flips} decisions differ");
@@ -85,7 +93,10 @@ fn recognizer_matches_ort() {
     assert!(box_same * 1000 >= box_total * 995, "detector boxes differ");
     assert!(orient_worst < 1e-3, "orientation differs by {orient_worst}");
     let frac = same as f64 / steps.max(1) as f64;
-    eprintln!("recognizer: {same}/{steps} timesteps ({:.4}%), {same_lines}/{lines} lines identical, max conf diff {worst_conf:.2e}", 100.0 * frac);
+    eprintln!(
+        "recognizer: {same}/{steps} timesteps ({:.4}%), {same_lines}/{lines} lines identical, max conf diff {worst_conf:.2e}",
+        100.0 * frac
+    );
     assert!(frac >= 0.999, "only {:.4}% of timesteps agree", 100.0 * frac);
     assert!(worst_conf < 1e-3, "confidence differs by {worst_conf}");
 }
