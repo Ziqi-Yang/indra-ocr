@@ -10,7 +10,8 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::gemm::{Act, Out, PackedB, gemm};
+use crate::gemm::{Act, Out, PackedB, gemm, gemm_par};
+use crate::par::Par;
 use crate::onnx::{Graph, Node};
 use crate::simd::multiversion;
 use crate::{EngineError, Result};
@@ -325,7 +326,7 @@ impl Net {
     }
 
     /// Run on one input feature map: the graph outputs (features or vectors).
-    pub fn run(&self, x: Feat) -> Result<Vec<NetOut>> {
+    pub fn run(&self, x: Feat, par: &Par) -> Result<Vec<NetOut>> {
         let mut v: Vec<Val> = vec![Val::None; self.slots];
         for (s, c) in &self.consts {
             v[*s] = c.clone();
@@ -333,7 +334,7 @@ impl Net {
         v[self.input] = Val::Feat(x);
         let mut prof = crate::profile::Timer::start();
         for (k, s) in self.steps.iter().enumerate() {
-            let out = self.exec(s, &mut v, k)?;
+            let out = self.exec(s, &mut v, k, par)?;
             let o = step_output(s);
             v[o] = out;
             for x in step_inputs(s) {
@@ -376,14 +377,14 @@ impl Net {
         }
     }
 
-    fn exec(&self, s: &Step, v: &mut [Val], k: usize) -> Result<Val> {
+    fn exec(&self, s: &Step, v: &mut [Val], k: usize, par: &Par) -> Result<Val> {
         Ok(match s {
             Step::Conv { x, kind, act, residual, .. } => {
                 let res = match residual {
                     Some(r) => Some(self.take(v, *r, k)?),
                     None => None,
                 };
-                Val::Feat(conv(self.feat(v, *x)?, kind, *act, res))
+                Val::Feat(conv(self.feat(v, *x)?, kind, *act, res, par))
             }
             Step::Unary { x, op, .. } => {
                 let mut f = self.take(v, *x, k)?;
@@ -648,21 +649,24 @@ pub(crate) fn conv_kind(g: &Graph, n: &Node) -> Result<ConvKind> {
 }
 
 /// One convolution with its fused activation (and residual: out = residual + act(conv)).
-pub(crate) fn conv(x: &Feat, kind: &ConvKind, act: Act, residual: Option<Feat>) -> Feat {
+pub(crate) fn conv(x: &Feat, kind: &ConvKind, act: Act, residual: Option<Feat>, par: &Par) -> Feat {
     match kind {
         ConvKind::Pointwise(b) => {
             let (mut o, out) = match residual {
                 Some(r) => (r, Out::Add),
                 None => (Feat::new(x.h, x.w, b.n), Out::Store),
             };
-            gemm(&x.data, x.c, x.h * x.w, b, &mut o.data, b.n, act, out);
+            gemm_par(par, &x.data, x.c, x.h * x.w, b, &mut o.data, b.n, act, out);
             o
         }
         ConvKind::Depthwise { w, b, k, stride, pad } => {
             let oh = (x.h + 2 * pad - k) / stride + 1;
             let ow = (x.w + 2 * pad - k) / stride + 1;
             let mut o = Feat::new(oh, ow, x.c);
-            dwconv2d(&x.data, x.h, x.w, x.c, w, b, *k, *stride, *pad, &mut o.data, oh, ow, false);
+            let rows = oh.div_ceil(par.threads() * 4).max(1);
+            par.chunks(&mut o.data, rows * ow * x.c, |i, chunk| {
+                dwconv2d(&x.data, x.h, x.w, x.c, w, b, *k, *stride, *pad, chunk, i * rows, chunk.len() / (ow * x.c), ow, false);
+            });
             unary_act(&mut o.data, act);
             if let Some(r) = residual {
                 add_into(&mut o.data, &r.data);
@@ -673,7 +677,11 @@ pub(crate) fn conv(x: &Feat, kind: &ConvKind, act: Act, residual: Option<Feat>) 
             let oh = (x.h + 2 * pad - k) / stride + 1;
             let ow = (x.w + 2 * pad - k) / stride + 1;
             let mut o = Feat::new(oh, ow, b.len());
-            dwconv2d(&x.data, x.h, x.w, b.len(), w, b, *k, *stride, *pad, &mut o.data, oh, ow, true);
+            let c = b.len();
+            let rows = oh.div_ceil(par.threads() * 4).max(1);
+            par.chunks(&mut o.data, rows * ow * c, |i, chunk| {
+                dwconv2d(&x.data, x.h, x.w, c, w, b, *k, *stride, *pad, chunk, i * rows, chunk.len() / (ow * c), ow, true);
+            });
             unary_act(&mut o.data, act);
             if let Some(r) = residual {
                 add_into(&mut o.data, &r.data);
@@ -690,13 +698,14 @@ pub(crate) fn conv(x: &Feat, kind: &ConvKind, act: Act, residual: Option<Feat>) 
             };
             // im2col in row blocks, so the patches stay in cache
             let rows_per = (4096 / ow).max(1);
-            let mut patches = vec![0f32; rows_per * ow * kk];
-            for r0 in (0..oh).step_by(rows_per) {
-                let rows = rows_per.min(oh - r0);
+            let out = if residual.is_some() { Out::Add } else { Out::Store };
+            par.chunks(&mut o.data, rows_per * ow * b.n, |i, chunk| {
+                let r0 = i * rows_per;
+                let rows = chunk.len() / (ow * b.n);
+                let mut patches = vec![0f32; rows * ow * kk];
                 im2col(&x.data, x.h, x.w, *cin, *k, *stride, *pad, r0, rows, ow, &mut patches);
-                let out = if residual.is_some() { Out::Add } else { Out::Store };
-                gemm(&patches, kk, rows * ow, b, &mut o.data[r0 * ow * b.n..(r0 + rows) * ow * b.n], b.n, act, out);
-            }
+                gemm(&patches, kk, rows * ow, b, chunk, b.n, act, out);
+            });
             o
         }
     }
@@ -731,12 +740,13 @@ fn im2col(x: &[f32], h: usize, w: usize, cin: usize, k: usize, stride: usize, pa
 /// full convolution of a 1-channel map).
 #[allow(clippy::too_many_arguments)]
 #[inline(always)]
-fn dw_impl<const C: usize>(x: &[f32], h: usize, w: usize, c: usize, wt: &[f32], b: &[f32], k: usize, stride: usize, pad: usize, out: &mut [f32], oh: usize, ow: usize, bcast: bool) {
+fn dw_impl<const C: usize>(x: &[f32], h: usize, w: usize, c: usize, wt: &[f32], b: &[f32], k: usize, stride: usize, pad: usize, out: &mut [f32], oy0: usize, rows: usize, ow: usize, bcast: bool) {
     // C > 0: the channel count is known at compile time (straight vector code)
     let c = if C > 0 { C } else { c };
     let xc = if bcast { 1 } else { c };
-    for oy in 0..oh {
-        let orow = &mut out[oy * ow * c..(oy + 1) * ow * c];
+    for r in 0..rows {
+        let oy = oy0 + r;
+        let orow = &mut out[r * ow * c..(r + 1) * ow * c];
         for o in orow.chunks_exact_mut(c) {
             o.copy_from_slice(&b[..c]);
         }
@@ -775,10 +785,10 @@ macro_rules! dw_dispatch {
     ($($n:literal)*) => {
         multiversion! {
             #[allow(clippy::too_many_arguments)]
-            fn dwconv2d(x: &[f32], h: usize, w: usize, c: usize, wt: &[f32], b: &[f32], k: usize, stride: usize, pad: usize, out: &mut [f32], oh: usize, ow: usize, bcast: bool) {
+            fn dwconv2d(x: &[f32], h: usize, w: usize, c: usize, wt: &[f32], b: &[f32], k: usize, stride: usize, pad: usize, out: &mut [f32], oy0: usize, rows: usize, ow: usize, bcast: bool) {
                 match c {
-                    $($n => dw_impl::<$n>(x, h, w, c, wt, b, k, stride, pad, out, oh, ow, bcast),)*
-                    _ => dw_impl::<0>(x, h, w, c, wt, b, k, stride, pad, out, oh, ow, bcast),
+                    $($n => dw_impl::<$n>(x, h, w, c, wt, b, k, stride, pad, out, oy0, rows, ow, bcast),)*
+                    _ => dw_impl::<0>(x, h, w, c, wt, b, k, stride, pad, out, oy0, rows, ow, bcast),
                 }
             }
         }

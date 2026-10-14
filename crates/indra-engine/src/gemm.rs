@@ -151,6 +151,22 @@ pub fn gemm(a: &[f32], lda: usize, m: usize, b: &PackedB, c: &mut [f32], ldc: us
     }
 }
 
+/// ``gemm`` with the rows of A and C split over a thread pool.
+#[allow(clippy::too_many_arguments)]
+pub fn gemm_par(par: &crate::par::Par, a: &[f32], lda: usize, m: usize, b: &PackedB, c: &mut [f32], ldc: usize, act: Act, out: Out) {
+    let t = par.threads();
+    if t <= 1 || m < 2 * MC {
+        return gemm(a, lda, m, b, c, ldc, act, out);
+    }
+    let mr = tile_rows(b.isa, b.nr);
+    let rows = m.div_ceil(t).div_ceil(mr) * mr;
+    par.chunks(&mut c[..m * ldc], rows * ldc, |i, cc| {
+        let r0 = i * rows;
+        let n = cc.len() / ldc;
+        gemm(&a[r0 * lda..], lda, n, b, cc, ldc, act, out);
+    });
+}
+
 /// One MR x NR tile (MR from ``tile_rows``).
 ///
 /// # Safety

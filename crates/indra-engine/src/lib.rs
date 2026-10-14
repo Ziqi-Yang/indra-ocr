@@ -12,6 +12,7 @@ pub mod gemm;
 pub mod math;
 pub mod onnx;
 pub mod order;
+pub mod par;
 pub mod profile;
 pub mod rec;
 pub mod simd;

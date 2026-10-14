@@ -8,6 +8,7 @@ use indra_engine::classifier::LineClassifier;
 use indra_engine::cnn::{Feat, Net, NetOut};
 use indra_engine::math::{DecodeState, MathDecoder, MathEncoder};
 use indra_engine::order::OrderNet;
+use indra_engine::par::Par;
 use indra_engine::rec::Recognizer;
 
 use crate::backend::{Backend, BackendError, DetOut, MathBackend, OrderOut, RecModel, RecOut, Result};
@@ -18,6 +19,7 @@ fn err(e: impl std::fmt::Display) -> BackendError {
 }
 
 pub struct NativeBackend {
+    par: std::sync::Arc<Par>,
     det: Net,
     orient: Option<Net>,
     rec: Recognizer,
@@ -31,7 +33,7 @@ pub struct NativeBackend {
 
 impl NativeBackend {
     pub fn new(dir: &Path, threads: usize, math: bool) -> Result<Self> {
-        let _ = threads;
+        let par = std::sync::Arc::new(Par::new(threads));
         let rec_path = if dir.join("rec.int8.onnx").exists() { dir.join("rec.int8.onnx") } else { dir.join("rec.onnx") };
         let rec = Recognizer::load(&rec_path).map_err(err)?;
         let (rec_cjk, script) = if dir.join("script.onnx").exists() && dir.join("rec_cjk.onnx").exists() {
@@ -41,12 +43,13 @@ impl NativeBackend {
         };
         let orient = if dir.join("orient.onnx").exists() { Some(Net::load(&dir.join("orient.onnx")).map_err(err)?) } else { None };
         Ok(NativeBackend {
+            par: par.clone(),
             det: Net::load(&dir.join("det.onnx")).map_err(err)?,
             orient,
             rec,
             rec_cjk,
             script,
-            math: if math { Some(NativeMath::load(dir)?) } else { None },
+            math: if math { Some(NativeMath::load(dir, par)?) } else { None },
             order: if dir.join("order.onnx").exists() { Some(OrderNet::load(&dir.join("order.onnx")).map_err(err)?) } else { None },
             #[cfg(feature = "ort")]
             ort: if dir.join("mask.onnx").exists() { Some(crate::ort_backend::OrtBackend::new(dir, threads, false)?) } else { None },
@@ -64,16 +67,17 @@ impl NativeBackend {
 
 /// A line classifier on line crops, each run at its width batch's padded
 /// width (as ONNX Runtime runs it, since the result depends on the padding).
-pub fn classify(c: &LineClassifier, lines: &[&ImageF]) -> Vec<f32> {
+pub fn classify(c: &LineClassifier, lines: &[&ImageF], par: &Par) -> Vec<f32> {
     let widths: Vec<usize> = lines.iter().map(|l| l.w).collect();
-    let mut out = vec![0f32; lines.len()];
+    // each line with its batch's padded width
+    let mut padded = vec![0usize; lines.len()];
     for batch in crate::crop::rec_batches(&widths, crate::ort_backend_batch()) {
         let wm = batch.iter().map(|&j| widths[j]).max().unwrap_or(0).div_ceil(crate::crop::WIDTH_MULTIPLE) * crate::crop::WIDTH_MULTIPLE;
         for j in batch {
-            out[j] = c.run(&lines[j].data, lines[j].h, lines[j].w, wm);
+            padded[j] = wm;
         }
     }
-    out
+    par.map(lines.len(), |j| c.run(&lines[j].data, lines[j].h, lines[j].w, padded[j]))
 }
 
 impl Backend for NativeBackend {
@@ -82,7 +86,7 @@ impl Backend for NativeBackend {
     }
 
     fn det(&mut self, x: &ImageF) -> Result<DetOut> {
-        let out = self.det.run(Feat { h: x.h, w: x.w, c: 1, data: x.data.clone() }).map_err(err)?;
+        let out = self.det.run(Feat { h: x.h, w: x.w, c: 1, data: x.data.clone() }, &self.par).map_err(err)?;
         match out.into_iter().next() {
             Some(NetOut::Feat(f)) if f.c == 3 => Ok(DetOut { h: f.h, w: f.w, data: f.to_chw() }),
             _ => Err(err("det.onnx did not give a [3, h, w] map")),
@@ -96,7 +100,7 @@ impl Backend for NativeBackend {
         };
         let input: Vec<(&[f32], usize)> = lines.iter().map(|l| (l.data.as_slice(), l.w)).collect();
         let stride = r.stride() as f64;
-        Ok(r.run(&input).into_iter().map(|o| RecOut { ids: o.ids, conf: o.conf, stride }).collect())
+        Ok(r.run(&input, &self.par).into_iter().map(|o| RecOut { ids: o.ids, conf: o.conf, stride }).collect())
     }
 
     fn has_cjk(&self) -> bool {
@@ -105,7 +109,7 @@ impl Backend for NativeBackend {
 
     fn script(&mut self, lines: &[&ImageF]) -> Result<Vec<f32>> {
         let c = self.script.as_ref().ok_or_else(|| BackendError("no script.onnx".into()))?;
-        Ok(classify(c, lines))
+        Ok(classify(c, lines, &self.par))
     }
 
     fn has_orient(&self) -> bool {
@@ -114,7 +118,7 @@ impl Backend for NativeBackend {
 
     fn orient(&mut self, x: &ImageF) -> Result<[f32; 4]> {
         let net = self.orient.as_ref().ok_or_else(|| BackendError("no orient.onnx".into()))?;
-        let out = net.run(Feat { h: x.h, w: x.w, c: 1, data: x.data.clone() }).map_err(err)?;
+        let out = net.run(Feat { h: x.h, w: x.w, c: 1, data: x.data.clone() }, &self.par).map_err(err)?;
         match out.into_iter().next() {
             Some(NetOut::Vec(p)) if p.len() == 4 => Ok([p[0], p[1], p[2], p[3]]),
             _ => Err(err("orient.onnx did not give 4 probabilities")),
@@ -156,6 +160,7 @@ impl Backend for NativeBackend {
 
 /// The math models on the native engine.
 pub struct NativeMath {
+    par: std::sync::Arc<Par>,
     cls: LineClassifier,
     enc: MathEncoder,
     dec: MathDecoder,
@@ -163,8 +168,9 @@ pub struct NativeMath {
 }
 
 impl NativeMath {
-    pub fn load(dir: &Path) -> Result<Self> {
+    pub fn load(dir: &Path, par: std::sync::Arc<Par>) -> Result<Self> {
         Ok(NativeMath {
+            par,
             cls: LineClassifier::load(&dir.join("mathcls.onnx")).map_err(err)?,
             enc: MathEncoder::load(&dir.join("math_enc.onnx")).map_err(err)?,
             dec: MathDecoder::load(&dir.join("math_dec_step.onnx")).map_err(err)?,
@@ -175,13 +181,13 @@ impl NativeMath {
 
 impl MathBackend for NativeMath {
     fn classify(&mut self, lines: &[&ImageF]) -> Result<Vec<f32>> {
-        Ok(classify(&self.cls, lines))
+        Ok(classify(&self.cls, lines, &self.par))
     }
 
     fn begin(&mut self, lines: &[&ImageF]) -> Result<()> {
         // the batch's padded width, as ONNX Runtime runs it
         let wm = lines.iter().map(|l| l.w).max().unwrap_or(0).div_ceil(crate::crop::WIDTH_MULTIPLE) * crate::crop::WIDTH_MULTIPLE;
-        let mem = lines.iter().map(|l| self.enc.encode(&l.data, l.w, wm)).collect();
+        let mem = self.par.map(lines.len(), |i| self.enc.encode(&lines[i].data, lines[i].w, wm));
         self.state = Some(self.dec.begin(mem));
         Ok(())
     }

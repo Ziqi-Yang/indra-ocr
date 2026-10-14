@@ -145,12 +145,11 @@ impl Recognizer {
     }
 
     /// Recognize lines: each ``(pixels, width)`` is a [height, width] row-major
-    /// ink map.
-    pub fn run(&self, lines: &[(&[f32], usize)]) -> Vec<LineOut> {
-        let mut out = vec![LineOut::default(); lines.len()];
-        let mut ws = Workspace::default();
+    /// ink map. Chunks of lines run in parallel on ``par``.
+    pub fn run(&self, lines: &[(&[f32], usize)], par: &crate::par::Par) -> Vec<LineOut> {
         // chunks of whole lines, about CHUNK timesteps each
         const CHUNK: usize = 384;
+        let mut bounds = vec![];
         let mut i = 0;
         while i < lines.len() {
             let mut j = i;
@@ -159,10 +158,18 @@ impl Recognizer {
                 t += self.length(lines[j].1);
                 j += 1;
             }
-            self.run_chunk(&lines[i..j], &mut out[i..j], &mut ws);
+            bounds.push((i, j));
             i = j;
         }
-        out
+        par.map(bounds.len(), |k| {
+            let (i, j) = bounds[k];
+            let mut out = vec![LineOut::default(); j - i];
+            self.run_chunk(&lines[i..j], &mut out, &mut Workspace::default());
+            out
+        })
+        .into_iter()
+        .flatten()
+        .collect()
     }
 
     fn run_chunk(&self, lines: &[(&[f32], usize)], out: &mut [LineOut], ws: &mut Workspace) {

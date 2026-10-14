@@ -86,7 +86,7 @@ impl LineClassifier {
             f = pool2(&f, false);
         }
         for k in &self.stages {
-            f = pool2(&conv(&f, k, Act::Relu, None), true);
+            f = pool2(&conv(&f, k, Act::Relu, None, crate::par::serial()), true);
         }
         // mean over height, then over the valid columns
         let valid = ((w as i64).div_euclid(self.div).max(1) as usize).min(f.w);

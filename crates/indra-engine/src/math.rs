@@ -245,7 +245,7 @@ impl MathEncoder {
             f.data[y * padded..y * padded + w].copy_from_slice(&x[y * w..(y + 1) * w]);
         }
         for k in &self.front {
-            f = conv(&f, k, Act::None, None);
+            f = conv(&f, k, Act::None, None, crate::par::serial());
             gelu(&mut f.data);
         }
         // the column conv: one patch (kh rows x channels) per column
