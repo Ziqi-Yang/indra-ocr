@@ -1,0 +1,187 @@
+{
+ "pages": 288,
+ "throughput": [
+  {
+   "mode": "ocr",
+   "cores": 8,
+   "rep": 0,
+   "who": "python",
+   "seconds": 35.59,
+   "pages_per_s": 8.09
+  },
+  {
+   "mode": "ocr",
+   "cores": 8,
+   "rep": 0,
+   "who": "ort",
+   "seconds": 36.74,
+   "pages_per_s": 7.84
+  },
+  {
+   "mode": "ocr",
+   "cores": 8,
+   "rep": 0,
+   "who": "native",
+   "seconds": 14.87,
+   "pages_per_s": 19.37
+  },
+  {
+   "mode": "ocr",
+   "cores": 8,
+   "rep": 1,
+   "who": "python",
+   "seconds": 35.41,
+   "pages_per_s": 8.13
+  },
+  {
+   "mode": "ocr",
+   "cores": 8,
+   "rep": 1,
+   "who": "ort",
+   "seconds": 35.98,
+   "pages_per_s": 8.0
+  },
+  {
+   "mode": "ocr",
+   "cores": 8,
+   "rep": 1,
+   "who": "native",
+   "seconds": 15.24,
+   "pages_per_s": 18.9
+  },
+  {
+   "mode": "auto",
+   "cores": 8,
+   "rep": 0,
+   "who": "python",
+   "seconds": 8.77,
+   "pages_per_s": 32.82
+  },
+  {
+   "mode": "auto",
+   "cores": 8,
+   "rep": 0,
+   "who": "ort",
+   "seconds": 7.49,
+   "pages_per_s": 38.43
+  },
+  {
+   "mode": "auto",
+   "cores": 8,
+   "rep": 0,
+   "who": "native",
+   "seconds": 4.54,
+   "pages_per_s": 63.49
+  },
+  {
+   "mode": "auto",
+   "cores": 8,
+   "rep": 1,
+   "who": "python",
+   "seconds": 8.82,
+   "pages_per_s": 32.67
+  },
+  {
+   "mode": "auto",
+   "cores": 8,
+   "rep": 1,
+   "who": "ort",
+   "seconds": 7.43,
+   "pages_per_s": 38.74
+  },
+  {
+   "mode": "auto",
+   "cores": 8,
+   "rep": 1,
+   "who": "native",
+   "seconds": 4.54,
+   "pages_per_s": 63.39
+  }
+ ],
+ "latency": [
+  {
+   "mode": "ocr",
+   "cores": 1,
+   "who": "python",
+   "median_ms": 606.1,
+   "pages": 6
+  },
+  {
+   "mode": "ocr",
+   "cores": 1,
+   "who": "ort",
+   "median_ms": 625.7,
+   "pages": 6
+  },
+  {
+   "mode": "ocr",
+   "cores": 1,
+   "who": "native",
+   "median_ms": 344.8,
+   "pages": 6
+  },
+  {
+   "mode": "ocr",
+   "cores": 4,
+   "who": "python",
+   "median_ms": 287.0,
+   "pages": 6
+  },
+  {
+   "mode": "ocr",
+   "cores": 4,
+   "who": "ort",
+   "median_ms": 276.2,
+   "pages": 6
+  },
+  {
+   "mode": "ocr",
+   "cores": 4,
+   "who": "native",
+   "median_ms": 128.3,
+   "pages": 6
+  },
+  {
+   "mode": "auto",
+   "cores": 1,
+   "who": "python",
+   "median_ms": 110.0,
+   "pages": 6
+  },
+  {
+   "mode": "auto",
+   "cores": 1,
+   "who": "ort",
+   "median_ms": 105.2,
+   "pages": 6
+  },
+  {
+   "mode": "auto",
+   "cores": 1,
+   "who": "native",
+   "median_ms": 83.9,
+   "pages": 6
+  },
+  {
+   "mode": "auto",
+   "cores": 4,
+   "who": "python",
+   "median_ms": 85.3,
+   "pages": 6
+  },
+  {
+   "mode": "auto",
+   "cores": 4,
+   "who": "ort",
+   "median_ms": 78.4,
+   "pages": 6
+  },
+  {
+   "mode": "auto",
+   "cores": 4,
+   "who": "native",
+   "median_ms": 61.8,
+   "pages": 6
+  }
+ ]
+}

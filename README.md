@@ -43,11 +43,18 @@ indra-ocr scan.png --format json          # lines, boxes, layout blocks, confide
 indra-ocr paper.pdf --mode ocr --timings  # ignore the text layer; per-page timings on stderr
 indra-ocr paper.pdf --math                # math as LaTeX
 indra-ocr paper.pdf --engine ort          # the models on ONNX Runtime instead
+indra-ocr scans/*.png --int8              # faster recognizer on AVX-512 VNNI CPUs (see below)
 indra-ocr-viewer                          # local web viewer on http://localhost:8765
 ```
 
 The options are the Python CLI's (`--mode`, `--model-order`, `--no-image-ocr`, `--cores`, `--dpi`,
-`--max-pages`, `--password`, `--math`, `--keep-furniture`, `--timings`, `--model-dir`), plus `--engine`.
+`--max-pages`, `--password`, `--math`, `--keep-furniture`, `--timings`, `--model-dir`), plus `--engine`
+and `--int8`.
+
+`--int8` runs the recognizer's large products in int8 (AVX-512 VNNI; elsewhere it is ignored): per-column
+int8 weights, per-row dynamic activations. It reads about 1.4x faster, and its output is no longer the
+Python package's: on the test pages 97% of lines are identical and 0.1% of characters differ (some for
+the better, some for the worse). It is off by default.
 
 From Rust:
 
@@ -108,14 +115,16 @@ Python package: `tools/gen_cv_golden.py`, `tools/gen_imread_golden.py`, `tools/d
   products stay in L2. The squeeze-excite, CTC argmax and softmax confidence are fused per chunk (the
   confidence only where the CTC path keeps a class).
 - **CNNs** (detector, orientation): a compiled NHWC executor with conv+activation(+residual) fusion,
-  depthwise kernels specialised per channel count, and the graph's shape arithmetic evaluated on
-  integers.
+  inverted residual blocks (expand, depthwise, project) run in row tiles that keep the expanded maps in
+  cache, depthwise kernels specialised per channel count (taps summed in registers), and the graph's
+  shape arithmetic evaluated on integers.
 - **Transformers** (reading order, math): small fused attention over the page's lines; the math decoder
   keeps per-line KV caches.
 - **ISA dispatch** at run time (`is_x86_feature_detected!` / NEON), so one binary is fast on any x86-64
   or AArch64 CPU.
 - **Threads**: page-parallel workers run single-threaded models; a single page (serial mode) splits its
-  recognizer chunks, conv rows and line work over the cores. With the native engine the default worker
+  recognizer chunks, conv rows and line work over a small fork-join pool (several chunks per thread,
+  claimed as threads come free; idle workers spin briefly, then sleep, so serial steps keep their CPU). With the native engine the default worker
   count is one per physical core (SMT siblings only add contention to kernels that already keep the
   vector units busy); `--cores` overrides it.
 

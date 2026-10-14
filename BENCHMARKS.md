@@ -14,32 +14,57 @@ text layer where it passes the checks (most of these pages).
 
 ## AMD Ryzen 9 7940HS (Zen 4, 8 cores / 16 threads, laptop)
 
-A laptop under sustained load throttles; numbers are the mean of 2 interleaved runs.
+Mean of 2 interleaved runs (a laptop under sustained load throttles; runs agree within ~3%).
 
 Throughput, 288 pages, 8 cores (pages/s):
 
 | mode | python | rust ort | rust native |
 |---|---|---|---|
-| ocr | 8.1 | 7.9 | **17.1** (2.1x) |
-| auto | 28.5 | 36.9 | **45.7** (1.6x) |
+| ocr | 8.1 | 7.9 | **19.1** (2.4x) |
+| auto | 32.7 | 38.6 | **63.4** (1.9x) |
 
 Latency, one page at a time (median ms per page):
 
 | mode | cores | python | rust ort | rust native |
 |---|---|---|---|---|
-| ocr | 1 | 625 | 634 | **378** |
-| ocr | 4 | 281 | 282 | **158** |
-| auto | 1 | 108 | 106 | **101** |
-| auto | 4 | 87 | 81 | **81** |
+| ocr | 1 | 606 | 626 | **345** |
+| ocr | 4 | 287 | 276 | **128** |
+| auto | 1 | 110 | 105 | **84** |
+| auto | 4 | 85 | 78 | **62** |
 
-One scanned page (`assets/examples/multi_column.png`, 138 lines, OCR): python 1027 / 416 / 985 ms on
-1 / 4 / 16 cores, rust native 541 / 210 / 162 ms (ONNX Runtime slows down with more threads than
-physical cores; the native thread pool keeps scaling).
+Where a scanned page's time goes (one core): recognizer ~210 ms native vs ~440 ms on ONNX Runtime (its
+products run at ~140 GFLOP/s, near this core's fp32 peak), detector ~28 vs ~60 ms, orientation model
+~8 vs ~16 ms. `--int8` takes the recognizer down another ~25%.
 
-Where a page's time goes (one core, OCR mode, a paper page): recognizer 210 ms native vs 438 ms on
-ONNX Runtime (the products run at ~140 GFLOP/s, near this core's fp32 peak), detector 31 vs 62 ms,
-orientation model 10 vs 17 ms.
+## Intel Xeon Silver 4314 (Ice Lake SP, 32 vCPUs, shared VM)
 
-## Intel Xeon Silver 4314 (Ice Lake SP, 32 vCPUs, VM)
+A VM on a shared host (other users' load during the runs; memory bandwidth ~9 GB/s for the whole VM),
+AVX-512 with one FMA unit per core. Mean of 2 interleaved runs.
 
-_Pending: tools/bench.py run in progress._
+Throughput, 288 pages (pages/s):
+
+| mode | cores | python | rust ort | rust native |
+|---|---|---|---|---|
+| ocr | 4 | 5.1 | 5.2 | **7.9** (1.5x) |
+| ocr | 8 | 9.2 | 9.2 | **15.4** (1.7x) |
+| ocr | 16 | 14.5 | 14.3 | **28.2** (1.9x) |
+| ocr | 32 | 16.8 | 15.7 | **42.5** (2.5x) |
+| auto | 4 | 15.8 | 24.3 | **29.2** (1.8x) |
+| auto | 8 | 22.7 | 40.2 | **51.9** (2.3x) |
+| auto | 16 | 46.3 | 54.3 | **82.3** (1.8x) |
+| auto | 32 | 58.3 | 50.5 | **104.5** (1.8x) |
+
+Latency, one page at a time (median ms per page):
+
+| mode | cores | python | rust ort | rust native |
+|---|---|---|---|---|
+| ocr | 1 | 738 | 792 | **515** |
+| ocr | 4 | 385 | 379 | **301** |
+| auto | 1 | 191 | 155 | **145** |
+| auto | 4 | 156 | **119** | 138 |
+
+On this machine the native detector only matches ONNX Runtime's (single thread and on 4 threads), so
+text-layer pages on 4 threads, which are mostly detection, are a little slower than with `--engine ort`;
+everything with recognition is faster.
+
+Raw results: `bench/bench-xeon-4314.json`, `bench/bench-ryzen-7940hs.json`.
