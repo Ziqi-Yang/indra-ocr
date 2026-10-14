@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/indra-ocr", "crates/indra-engine", "crates/indra-ocr-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/datalab-to/indra"
+rust-version = "1.88"
+
+[workspace.dependencies]
+indra-ocr = { path = "crates/indra-ocr" }
+indra-engine = { path = "crates/indra-engine" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+thiserror = "2"
+anyhow = "1"
+rayon = "1"
+
+[profile.release]
+debug = 1
+codegen-units = 4
+lto = "thin"
+
+[profile.dev.package."*"]
+opt-level = 2

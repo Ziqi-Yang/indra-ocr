@@ -1,0 +1,6 @@
+/target
+/tests/fixtures/golden/
+/tests/fixtures/pdfs/
+*.npy
+/result
+.direnv
