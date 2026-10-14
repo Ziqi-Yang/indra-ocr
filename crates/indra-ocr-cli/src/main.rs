@@ -70,7 +70,7 @@ struct Args {
     #[arg(long)]
     timings: bool,
     /// inference engine: native (indra-engine) or ort (ONNX Runtime)
-    #[arg(long, default_value = "ort")]
+    #[arg(long, default_value = "native")]
     engine: indra_ocr::Engine,
 }
 

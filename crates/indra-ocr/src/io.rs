@@ -147,19 +147,19 @@ fn decode_tiff(bytes: &[u8]) -> Option<Vec<Gray>> {
 pub fn read_images(path: &Path) -> Result<Vec<Gray>, InputError> {
     let bad = || InputError(format!("{}: not a PDF or a readable image", path.display()));
     let bytes = std::fs::read(path).map_err(|_| bad())?;
-    let fmt = image::guess_format(&bytes).map_err(|_| bad())?;
+    decode_images(&bytes).ok_or_else(bad)
+}
+
+/// Grayscale pages of an image in memory (None: not a readable image).
+pub fn decode_images(bytes: &[u8]) -> Option<Vec<Gray>> {
+    let fmt = image::guess_format(bytes).ok()?;
     let frames = match fmt {
-        image::ImageFormat::Jpeg => decode_jpeg(&bytes).map(|g| vec![g]),
-        image::ImageFormat::Tiff => decode_tiff(&bytes),
-        image::ImageFormat::Png => {
-            image::load_from_memory_with_format(&bytes, fmt).ok().map(|i| vec![to_gray(i, Conv::Png)])
-        }
-        image::ImageFormat::WebP => image::load_from_memory_with_format(&bytes, fmt).ok().map(|i| vec![to_gray(i, Conv::CvtColor)]),
-        _ => image::load_from_memory_with_format(&bytes, fmt).ok().map(|i| vec![to_gray(i, Conv::Codec)]),
+        image::ImageFormat::Jpeg => decode_jpeg(bytes).map(|g| vec![g]),
+        image::ImageFormat::Tiff => decode_tiff(bytes),
+        image::ImageFormat::Png => image::load_from_memory_with_format(bytes, fmt).ok().map(|i| vec![to_gray(i, Conv::Png)]),
+        image::ImageFormat::WebP => image::load_from_memory_with_format(bytes, fmt).ok().map(|i| vec![to_gray(i, Conv::CvtColor)]),
+        _ => image::load_from_memory_with_format(bytes, fmt).ok().map(|i| vec![to_gray(i, Conv::Codec)]),
     };
-    let frames = frames.or_else(|| image::load_from_memory(&bytes).ok().map(|i| vec![to_gray(i, Conv::Codec)]));
-    match frames {
-        Some(f) if !f.is_empty() && f.iter().all(|g| g.w > 0 && g.h > 0) => Ok(f),
-        _ => Err(bad()),
-    }
+    let frames = frames.or_else(|| image::load_from_memory(bytes).ok().map(|i| vec![to_gray(i, Conv::Codec)]));
+    frames.filter(|f| !f.is_empty() && f.iter().all(|g| g.w > 0 && g.h > 0))
 }

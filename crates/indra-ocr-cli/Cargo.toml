@@ -1,6 +1,6 @@
 [package]
 name = "indra-ocr-cli"
-description = "Command line for Indra OCR: PDFs and images to markdown, text or JSON"
+description = "Command line and local viewer for Indra OCR: PDFs and images to markdown, text or JSON"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,14 @@ repository.workspace = true
 name = "indra-ocr"
 path = "src/main.rs"
 
+[[bin]]
+name = "indra-ocr-viewer"
+path = "src/viewer.rs"
+
 [dependencies]
 indra-ocr.workspace = true
 clap = { version = "4", features = ["derive"] }
 serde_json.workspace = true
+tiny_http = "0.12"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+base64 = "0.22"

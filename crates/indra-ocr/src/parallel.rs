@@ -20,9 +20,9 @@ pub const WORKER_MEMORY: f64 = 1.5e9;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Engine {
     /// ONNX Runtime (the reference)
-    #[default]
     Ort,
     /// The native engine (indra-engine)
+    #[default]
     Native,
 }
 

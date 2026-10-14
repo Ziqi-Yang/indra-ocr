@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Indra OCR viewer · Datalab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+ --font-body:"Geist",ui-sans-serif,system-ui,sans-serif;--font-mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,monospace;
+ --page:oklch(98.5% .004 263);--surface:oklch(96.5% .006 263);--surface-2:oklch(94% .007 263);
+ --rule:oklch(86% .008 263);--rule-strong:oklch(78% .01 263);
+ --ink:oklch(18% .012 263);--ink-2:oklch(36% .012 263);--ink-3:oklch(48% .014 263);--ink-4:oklch(70% .014 263);
+ --accent:oklch(38% .24 263);--accent-soft:oklch(96% .04 263);--accent-strong:oklch(30% .26 263);--accent-ink:oklch(99% 0 0);
+ --ok:oklch(58% .15 145);--warn:oklch(72% .16 75);--err:oklch(56% .2 25);--focus:oklch(38% .24 263 / .35);
+ --hairline:1px;--ease:cubic-bezier(.25,1,.5,1)}
+@media (min-resolution:2dppx){:root{--hairline:.5px}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--page);color:var(--ink);font:14px/1.5 var(--font-body);-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.mono{font-family:var(--font-mono)}
+.label{font:500 10.5px/1 var(--font-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+/* top bar */
+.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:18px;height:56px;padding:0 24px;background:color-mix(in oklch,var(--page) 88%,transparent);backdrop-filter:blur(8px);border-bottom:var(--hairline) solid var(--rule)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:600;letter-spacing:-.01em}
+.mark{width:30px;height:30px;margin:0 -4px}
+.brand .sep{color:var(--ink-4);font-weight:400}.brand .prod{font-weight:500}
+.ver{font:11px var(--font-mono);color:var(--ink-3);border:var(--hairline) solid var(--rule);border-radius:999px;padding:2px 8px}
+.top .sp{flex:1}.top nav{display:flex;gap:18px;font-size:13px}.top nav a{color:var(--ink-2)}
+.cta{background:var(--accent);color:var(--accent-ink)!important;padding:7px 12px;border-radius:6px;font-weight:500}.cta:hover{background:var(--accent-strong);text-decoration:none}
+/* layout */
+.wrap{display:grid;grid-template-columns:300px minmax(0,1fr);min-height:calc(100vh - 56px)}
+aside{border-right:var(--hairline) solid var(--rule);padding:20px;display:flex;flex-direction:column;gap:22px;position:sticky;top:56px;height:calc(100vh - 56px);overflow:auto;background:var(--page)}
+main{padding:24px;display:flex;flex-direction:column;gap:24px;min-width:0}
+@media(max-width:900px){.wrap{grid-template-columns:1fr}aside{position:static;height:auto;border-right:0;border-bottom:var(--hairline) solid var(--rule)}}
+/* drop zone */
+#drop{border:1px dashed var(--rule-strong);border-radius:10px;padding:18px 14px;text-align:center;cursor:pointer;background:var(--surface);transition:border-color var(--ease) .12s,background .12s}
+#drop:hover,#drop.over{border-color:var(--accent);background:var(--accent-soft)}
+#drop b{display:block;font-weight:500;margin-bottom:2px}#drop span{color:var(--ink-3);font-size:12.5px}
+#fname{margin-top:8px;font:12px var(--font-mono);color:var(--ink-2);word-break:break-all}
+/* controls */
+.group{display:flex;flex-direction:column;gap:10px}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);border:var(--hairline) solid var(--rule-strong);border-radius:7px;overflow:hidden}
+.seg button{border:0;background:transparent;padding:7px 4px;font:500 12.5px var(--font-body);color:var(--ink-2);cursor:pointer}
+.seg button+button{border-left:var(--hairline) solid var(--rule)}.seg button.on{background:var(--ink);color:var(--page)}
+.hint{font-size:12px;color:var(--ink-3);line-height:1.4}
+.sw{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;color:var(--ink-2);cursor:pointer;user-select:none}
+.sw input{appearance:none;width:30px;height:18px;border-radius:999px;background:var(--rule-strong);position:relative;cursor:pointer;transition:background .15s;flex:none}
+.sw input::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .15s var(--ease)}
+.sw input:checked{background:var(--accent)}.sw input:checked::after{transform:translateX(12px)}
+.sw input:focus-visible{outline:3px solid var(--focus)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.field{display:flex;flex-direction:column;gap:5px}.field select,.field input{font:13px var(--font-body);padding:6px 8px;border:var(--hairline) solid var(--rule-strong);border-radius:6px;background:#fff;color:var(--ink)}
+.btn{border:0;background:var(--accent);color:var(--accent-ink);font:500 13px var(--font-body);padding:9px 12px;border-radius:7px;cursor:pointer}
+.btn:hover{background:var(--accent-strong)}.btn:disabled{background:var(--rule-strong);cursor:default}
+.dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:0}
+#stats{font:12px/1.7 var(--font-mono);color:var(--ink-2)}#stats b{color:var(--ink);font-weight:500}
+#status{font:12px var(--font-mono);color:var(--ink-3);min-height:18px}
+.callout{border:var(--hairline) solid var(--rule);border-radius:10px;padding:12px;background:var(--surface);font-size:12.5px;color:var(--ink-2)}
+/* empty state */
+.empty{border:1px dashed var(--rule-strong);border-radius:14px;padding:64px 24px;text-align:center;color:var(--ink-3)}
+.empty h2{font-weight:500;color:var(--ink);letter-spacing:-.015em;margin:0 0 6px;font-size:22px}
+/* page card */
+.card{background:#fff;border:var(--hairline) solid var(--rule);border-radius:12px;overflow:hidden}
+.ch{display:flex;align-items:center;flex-wrap:wrap;gap:10px 16px;padding:12px 16px;border-bottom:var(--hairline) solid var(--rule)}
+.ch h3{margin:0;font-size:15px;font-weight:600;letter-spacing:-.01em}
+.chip{font:500 10.5px/1 var(--font-mono);letter-spacing:.06em;text-transform:uppercase;padding:5px 7px;border-radius:5px;background:var(--surface-2);color:var(--ink-2)}
+.chip.text{background:oklch(95% .04 145);color:oklch(38% .12 145)}.chip.ocr{background:var(--accent-soft);color:var(--accent)}.chip.hybrid{background:oklch(95% .05 75);color:oklch(42% .12 75)}.chip.error{background:oklch(95% .05 25);color:var(--err)}
+.meta{font:12px var(--font-mono);color:var(--ink-3)}.ch .sp{flex:1}
+.tbar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--surface-2);width:180px}.tbar i{display:block;height:100%}
+.body{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);min-height:420px}
+@media(max-width:1200px){.body{grid-template-columns:1fr}}
+.pageview{padding:16px;background:var(--surface);border-right:var(--hairline) solid var(--rule)}
+svg.pg{width:100%;height:auto;display:block;background:#fff;box-shadow:0 1px 2px oklch(18% .012 263 / .08),0 0 0 var(--hairline) var(--rule)}
+.right{display:flex;flex-direction:column;min-width:0}
+.tabs{display:flex;gap:2px;padding:10px 12px 0;border-bottom:var(--hairline) solid var(--rule)}
+.tabs button{border:0;background:transparent;padding:8px 10px;font:500 12.5px var(--font-body);color:var(--ink-3);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tabs button.on{color:var(--ink);border-bottom-color:var(--accent)}
+.pane{flex:1;overflow:auto;max-height:78vh;padding:14px 16px}
+.pane.src{white-space:pre-wrap;font:12.5px/1.6 var(--font-mono);color:var(--ink-2)}
+.preview{font-size:14px;line-height:1.6}.preview h1,.preview h2,.preview h3{letter-spacing:-.015em;line-height:1.25;margin:1.1em 0 .4em}.preview h1{font-size:20px}.preview h2{font-size:17px}.preview h3{font-size:15px}
+.preview p{margin:.5em 0}.preview ul,.preview ol{padding-left:1.4em}.preview table{border-collapse:collapse;margin:10px 0;font-size:12.5px}
+.preview td,.preview th{border:var(--hairline) solid var(--rule-strong);padding:4px 7px;vertical-align:top}.preview th{background:var(--surface)}
+.preview code.m{font:12.5px var(--font-mono);background:var(--accent-soft);color:var(--accent-strong);padding:1px 4px;border-radius:4px}
+.ln-row{display:flex;gap:10px;padding:3px 6px;border-radius:5px;font-size:13px;cursor:default}.ln-row:hover,.ln-row.on{background:var(--accent-soft)}
+.ln-row .k{font:11px var(--font-mono);color:var(--ink-4);min-width:28px;text-align:right;padding-top:2px}.ln-row .t{flex:1;min-width:0;word-break:break-word}
+.ln-row .c{font:11px var(--font-mono);color:var(--ink-3);padding-top:2px}.ln-row .c.low{color:var(--err)}
+/* overlays */
+rect.ln{fill:transparent;stroke:oklch(55% .15 263);stroke-width:1;vector-effect:non-scaling-stroke;opacity:.55}
+rect.ln.on{fill:oklch(55% .2 263 / .18);stroke-width:2.5;opacity:1}
+rect.bk{fill:transparent;stroke-width:2;vector-effect:non-scaling-stroke}rect.bk.on{stroke-width:3.5}
+text.bl{font-family:var(--font-mono);font-weight:600;paint-order:stroke;stroke:#fff}
+path.ord{fill:none;stroke:oklch(60% .2 30);stroke-width:1.4;vector-effect:non-scaling-stroke;opacity:.8}
+circle.on-n{fill:oklch(60% .2 30)}text.n{font-family:var(--font-mono);font-weight:600;fill:#fff;text-anchor:middle;dominant-baseline:central}
+.hide-lines rect.ln,.hide-blocks rect.bk,.hide-blocks text.bl,.hide-labels text.bl,.hide-order .ord,.hide-order circle.on-n,.hide-order text.n{display:none}
+footer{padding:18px 24px;border-top:var(--hairline) solid var(--rule);display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;font-size:12px;color:var(--ink-3)}
+</style></head><body>
+<div class="top">
+ <div class="brand"><img class="mark" src="data:image/png;base64,__LOGO__" alt="Datalab">Datalab<span class="sep">/</span><span class="prod">Indra OCR</span></div><span class="ver" id="ver"></span>
+ <div class="sp"></div>
+ <nav><a href="https://github.com/datalab-to/indra" target="_blank" rel="noopener">GitHub</a><a href="https://huggingface.co/datalab-to/indra-ocr" target="_blank" rel="noopener">Models</a><a class="cta" href="https://www.datalab.to/?utm_source=indra-viewer" target="_blank" rel="noopener">Try Chandra on Datalab</a></nav>
+</div>
+<div class="wrap">
+<aside>
+ <div><div id="drop"><b>Drop a PDF or an image</b><span>or click to choose a file</span><input id="file" type="file" accept=".pdf,image/*" hidden></div><div id="fname"></div></div>
+ <div class="group"><div class="label">Source</div>
+  <div class="seg" id="mode"><button data-v="auto">Auto</button><button data-v="ocr">OCR</button><button data-v="text">Text layer</button></div>
+  <div class="hint" id="modehint"></div></div>
+ <div class="group"><div class="label">Pipeline</div>
+  <label class="sw">Math as LaTeX<input type="checkbox" id="math"></label>
+  <label class="sw">Keep headers and footers<input type="checkbox" id="furniture"></label>
+  <label class="sw">PDF reading order<input type="checkbox" id="pdforder" checked></label>
+  <label class="sw">OCR text inside images<input type="checkbox" id="imageocr" checked></label>
+  <label class="sw" id="tesslab" hidden>Compare with Tesseract<input type="checkbox" id="tess"></label>
+  <div class="row2"><div class="field"><span class="label">DPI</span><select id="dpi"><option>150</option><option selected>200</option><option>300</option></select></div>
+  <div class="field"><span class="label">Max pages</span><input id="maxp" type="number" min="1" value="20"></div></div>
+  <button class="btn" id="rerun" disabled>Read again with these options</button></div>
+ <div class="group"><div class="label">Show</div>
+  <label class="sw">Lines<input type="checkbox" class="disp" data-c="lines" checked></label>
+  <label class="sw">Layout blocks<input type="checkbox" class="disp" data-c="blocks" checked></label>
+  <label class="sw">Block labels<input type="checkbox" class="disp" data-c="labels" checked></label>
+  <label class="sw">Reading order<input type="checkbox" class="disp" data-c="order"></label>
+  <div id="legend" class="hint"></div></div>
+ <div class="group"><div class="label">Run</div><div id="status"></div><div id="stats"></div></div>
+ <div class="callout">Need handwriting, math and tables at the highest accuracy? <a href="https://www.datalab.to/?utm_source=indra-viewer" target="_blank" rel="noopener">Chandra on Datalab</a> reads them, with $5 in free credits to start.</div>
+</aside>
+<main id="out"><div class="empty"><h2>Read a document</h2>Drop a PDF or an image on the left. Pages appear as they finish, with lines, layout blocks and reading order drawn over each page.</div></main>
+</div>
+<footer><span>Indra OCR · fast CPU OCR by <a href="https://www.datalab.to" target="_blank" rel="noopener">Datalab</a></span><span class="mono">Runs locally: your files stay on this machine.</span></footer>
+<script>
+const $=s=>document.querySelector(s),$$=s=>[...document.querySelectorAll(s)];
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
+const BLOCK={"Text":"oklch(55% .02 263)","Section-Header":"oklch(45% .22 263)","Page-Header":"oklch(65% .03 263)","Page-Footer":"oklch(65% .03 263)","List-Group":"oklch(58% .15 145)","Table":"oklch(55% .18 320)","Caption":"oklch(62% .14 200)","Footnote":"oklch(60% .12 60)","Table-Of-Contents":"oklch(55% .12 180)","Form":"oklch(50% .16 25)"};
+const STAGES=[["text_ms","Text layer","oklch(55% .15 300)"],["det_ms","Detect","oklch(45% .22 263)"],["rec_ms","Recognize","oklch(58% .15 145)"],["ocr_ms","OCR in images","oklch(62% .12 200)"],["math_ms","Math","oklch(55% .18 320)"],["order_ms","Order","oklch(68% .15 75)"]];
+const HINT={auto:"Reads the PDF text layer where it passes the checks, and OCRs the rest.",ocr:"Ignores the text layer and OCRs every page.",text:"Uses the text layer even when the checks fail."};
+let mode="auto",doc=null,stats=[],runId=0;
+function setMode(v){mode=v;$$('#mode button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));$('#modehint').textContent=HINT[v]}
+$$('#mode button').forEach(b=>b.onclick=()=>setMode(b.dataset.v));
+$('#legend').innerHTML=Object.entries(BLOCK).filter(([k])=>k!=="Page-Footer").map(([k,c])=>`<span style="white-space:nowrap;margin-right:8px"><span class="dot" style="background:${c}"></span>${k==='Page-Header'?'Header/Footer':k.replace(/-/g,' ')}</span>`).join(' ');
+function applyDisplay(){const o=$('#out');$$('.disp').forEach(i=>o.classList.toggle('hide-'+i.dataset.c,!i.checked))}
+$$('.disp').forEach(i=>i.onchange=applyDisplay);applyDisplay();
+const drop=$('#drop'),file=$('#file');
+drop.onclick=()=>file.click();file.onchange=()=>file.files[0]&&start(file.files[0]);
+drop.ondragover=e=>{e.preventDefault();drop.classList.add('over')};drop.ondragleave=()=>drop.classList.remove('over');
+drop.ondrop=e=>{e.preventDefault();drop.classList.remove('over');e.dataTransfer.files[0]&&start(e.dataTransfer.files[0])};
+$('#rerun').onclick=()=>doc&&run();
+fetch('/info').then(r=>r.json()).then(i=>{$('#ver').textContent='v'+i.version;if(i.tesseract)$('#tesslab').hidden=false;const d=i.defaults||{};
+ setMode(d.mode||'auto');$('#math').checked=!!d.math;$('#furniture').checked=!!d.furniture;$('#pdforder').checked=d.pdf_order!==false;$('#imageocr').checked=d.image_ocr!==false;
+ if(d.dpi)$('#dpi').value=String(Math.round(d.dpi));if(d.max_pages)$('#maxp').value=d.max_pages});
+setMode('auto');
+async function start(f){$('#fname').textContent=f.name+' · '+(f.size/1024).toFixed(0)+' KB';$('#status').textContent='Uploading ...';
+ const u=await (await fetch('/upload',{method:'POST',body:await f.arrayBuffer()})).json();
+ if(u.error){$('#status').textContent='Error: '+u.error;return}doc={...u,name:f.name};$('#rerun').disabled=false;run()}
+function opts(){return{mode,math:$('#math').checked,furniture:$('#furniture').checked,model_order:!$('#pdforder').checked,image_ocr:$('#imageocr').checked,dpi:+$('#dpi').value,tesseract:$('#tess').checked}}
+async function run(){const id=++runId,o=opts(),N=Math.min(doc.pages,Math.max(1,+$('#maxp').value||1));
+ $('#out').innerHTML='';stats=[];summary();const t0=performance.now();
+ for(let n=0;n<N;n++){if(id!==runId)return;$('#status').textContent=`Reading page ${n+1} of ${N}`+(doc.pages>N?` (first ${N} of ${doc.pages})`:'')+(o.math&&n===0?' · math models load on first use':'')+' ...';
+  const p=await (await fetch('/page',{method:'POST',body:JSON.stringify({id:doc.id,n,opts:o})})).json();if(id!==runId)return;
+  if(p.error){$('#status').textContent=`Error on page ${n+1}: ${p.error}`;return}render(p);stats.push(p.timings);summary()}
+ $('#status').textContent=`${N} page${N>1?'s':''} in ${(performance.now()-t0).toFixed(0)} ms (including display)`}
+function summary(){const el=$('#stats');if(!stats.length){el.innerHTML='';return}const n=stats.length,s=k=>stats.reduce((a,t)=>a+(t[k]||0),0),tot=s('total_ms');
+ let h=`<b>${(tot/n).toFixed(0)} ms</b> per page · <b>${(1000*n/tot).toFixed(1)}</b> pages/s<br>`+STAGES.filter(([k])=>s(k)>0).map(([k,l])=>`${l} ${(s(k)/n).toFixed(0)} ms`).join(' · ');
+ const tt=stats.filter(t=>t.tesseract_ms!=null);if(tt.length){const tm=tt.reduce((a,t)=>a+t.tesseract_ms,0)/tt.length;h+=`<br>Tesseract ${tm.toFixed(0)} ms/page (${(tm/(tot/n)).toFixed(1)}x)`}
+ el.innerHTML=h}
+function md(src){// a small markdown renderer: headings, lists, paragraphs, HTML tables, $math$
+ const lines=(src||'').split('\n'),out=[];let list=null,para=[];
+ const inline=t=>esc(t).replace(/\$\$([^$]+)\$\$|\$([^$\n]+)\$/g,(m,a,b)=>`<code class="m">${a||b}</code>`).replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>');
+ const flush=()=>{if(para.length){out.push('<p>'+para.map(inline).join(' ')+'</p>');para=[]}if(list){out.push(`</${list}>`);list=null}};
+ for(const raw of lines){const l=raw.trimEnd();
+  if(/^<table/.test(l)||/^<\/?t(r|d|h|able|head|body)/.test(l)){flush();out.push(l.replace(/<(?!\/?(table|thead|tbody|tr|td|th)\b)[^>]*>/g,''));continue}
+  const h=l.match(/^(#{1,6})\s+(.*)/);if(h){flush();const k=Math.min(3,h[1].length);out.push(`<h${k}>${inline(h[2])}</h${k}>`);continue}
+  const li=l.match(/^\s*(?:[-*•]|(\d+)[.)])\s+(.*)/);if(li){if(para.length){out.push('<p>'+para.map(inline).join(' ')+'</p>');para=[]}const t=li[1]?'ol':'ul';if(list!==t){if(list)out.push(`</${list}>`);out.push(`<${t}>`);list=t}out.push(`<li>${inline(li[2])}</li>`);continue}
+  if(!l.trim()){flush();continue}if(list){out.push(`</${list}>`);list=null}para.push(l)}
+ flush();return out.join('\n')}
+function render(p){const c=document.createElement('div');c.className='card';const t=p.timings,tot=t.total_ms||1;
+ const u=Math.max(1,p.w/640);// page units per screen pixel, about: keeps labels and markers readable
+ const src={text:'Text layer',ocr:'OCR',hybrid:'Text layer + OCR',error:'Error'}[p.source]||p.source;
+ const bar=STAGES.map(([k,l,col])=>`<i style="width:${100*(t[k]||0)/tot}%;background:${col}" title="${l} ${t[k]||0} ms"></i>`).join('');
+ const extra=(p.rotation?` · turned ${p.rotation}°`:'')+(p.skew?` · straightened ${(+p.skew).toFixed(1)}°`:'');
+ const blocks=p.blocks.map((b,k)=>{const col=BLOCK[b.label]||'oklch(55% .02 263)',[x0,y0,x1,y1]=b.box;return `<rect class="bk" data-b="${k}" x="${x0-3}" y="${y0-3}" width="${x1-x0+6}" height="${y1-y0+6}" stroke="${col}"/><text class="bl" x="${x0-2}" y="${Math.max(11*u,y0-5*u)}" fill="${col}" font-size="${11*u}" stroke-width="${3*u}">${esc(b.label)}</text>`}).join('');
+ const lines=p.lines.map((l,k)=>`<rect class="ln" data-k="${k}" x="${l.box[0]}" y="${l.box[1]}" width="${l.box[2]-l.box[0]}" height="${l.box[3]-l.box[1]}"/>`).join('');
+ const cen=p.lines.map(l=>[(l.box[0]+l.box[2])/2,(l.box[1]+l.box[3])/2]);
+ const ord=cen.length>1?`<path class="ord" d="M${cen.map(c=>c.join(',')).join(' L')}"/>`:'';
+ const nums=cen.map((c,k)=>`<circle class="on-n" cx="${c[0]}" cy="${c[1]}" r="${7*u}"/><text class="n" x="${c[0]}" y="${c[1]}" font-size="${8*u}">${k+1}</text>`).join('');
+ const rows=p.lines.map((l,k)=>`<div class="ln-row" data-k="${k}"><span class="k">${k+1}</span><span class="t">${esc(l.text)||'<span style=\"color:var(--ink-4)\">(no text)</span>'}</span><span class="c ${l.conf<.8?'low':''}">${l.conf.toFixed(2)}</span></div>`).join('');
+ const tabs=['Preview','Markdown','Lines','JSON'].concat(p.tesseract!=null?['Tesseract']:[]);
+ c.innerHTML=`<div class="ch"><h3>Page ${p.page}</h3><span class="chip ${p.source}">${src}</span><span class="meta">${p.lines.length} lines · ${p.blocks.length} blocks${extra}</span><span class="sp"></span><div class="tbar">${bar}</div><span class="meta">${t.total_ms} ms</span></div>
+ ${p.note?`<div class="meta" style="padding:6px 16px;border-bottom:var(--hairline) solid var(--rule)">${esc(p.note)}</div>`:''}
+ <div class="body"><div class="pageview"><svg class="pg" viewBox="0 0 ${p.w} ${p.h}"><image href="${p.img}" width="${p.w}" height="${p.h}"/>${blocks}${lines}${ord}${nums}</svg></div>
+ <div class="right"><div class="tabs">${tabs.map((n,i)=>`<button data-tab="${n}" class="${i?'':'on'}">${n}</button>`).join('')}</div>
+ <div class="pane preview" data-pane="Preview">${md(p.markdown)}</div>
+ <div class="pane src" data-pane="Markdown" hidden>${esc(p.markdown||'')}</div>
+ <div class="pane" data-pane="Lines" hidden>${rows}</div>
+ <div class="pane src" data-pane="JSON" hidden>${esc(JSON.stringify(p.json,null,1))}</div>
+ ${p.tesseract!=null?`<div class="pane src" data-pane="Tesseract" hidden>${esc(p.tesseract)}</div>`:''}</div></div>`;
+ c.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{c.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x===b));c.querySelectorAll('.pane').forEach(x=>x.hidden=x.dataset.pane!==b.dataset.tab)});
+ const hl=k=>c.querySelectorAll('[data-k]').forEach(el=>el.classList.toggle('on',el.dataset.k==k));
+ c.querySelectorAll('.ln-row').forEach(el=>{el.onmouseenter=()=>hl(el.dataset.k);el.onmouseleave=()=>hl(-1)});
+ c.querySelectorAll('rect.ln').forEach(el=>{el.onmouseenter=()=>{hl(el.dataset.k);const r=c.querySelector(`.ln-row[data-k="${el.dataset.k}"]`);r&&r.scrollIntoView({block:'nearest'})};el.onmouseleave=()=>hl(-1)});
+ c.querySelectorAll('rect.bk').forEach(el=>{el.onmouseenter=()=>el.classList.add('on');el.onmouseleave=()=>el.classList.remove('on')});
+ $('#out').appendChild(c)}
+</script></body></html>
