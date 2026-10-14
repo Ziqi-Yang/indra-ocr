@@ -11,8 +11,8 @@
 use std::path::Path;
 
 use crate::gemm::{Act, Out, PackedB, gemm};
-use crate::qgemm::{QPackedB, qgemm};
 use crate::onnx::{Graph, Node};
+use crate::qgemm::{QPackedB, qgemm};
 use crate::simd::{argmax_row, col_sums, dwconv1d, scale_cols, sigmoid, sum_exp};
 use crate::{EngineError, Result};
 

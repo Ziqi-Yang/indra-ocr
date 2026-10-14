@@ -13,8 +13,8 @@ pub mod math;
 pub mod onnx;
 pub mod order;
 pub mod par;
-pub mod qgemm;
 pub mod profile;
+pub mod qgemm;
 pub mod rec;
 pub mod simd;
 

@@ -43,6 +43,43 @@ pub fn exp_f32(x: f32) -> f32 {
     p * f32::from_bits(bits)
 }
 
+/// ln(x) for float32 x > 0, branch-free (vectorizes): exponent and mantissa
+/// in [sqrt(1/2), sqrt(2)), then the Cephes polynomial; error about 1 ulp.
+#[inline(always)]
+pub fn ln_f32(x: f32) -> f32 {
+    let bits = x.to_bits();
+    let mut e = ((bits >> 23) & 0xff) as i32 - 126;
+    let mut m = f32::from_bits((bits & 0x007f_ffff) | 0x3f00_0000); // [0.5, 1)
+    let small = m < std::f32::consts::FRAC_1_SQRT_2;
+    e -= small as i32;
+    m = if small { m + m - 1.0 } else { m - 1.0 };
+    let z = m * m;
+    let mut y = 7.037_683_6e-2;
+    for c in
+        [-1.151_461e-1, 1.167_699_9e-1, -1.242_014_1e-1, 1.424_932_3e-1, -1.666_805_8e-1, 2.000_071_4e-1, -2.499_999_4e-1, 3.333_333e-1]
+    {
+        y = y * m + c;
+    }
+    y = y * m * z;
+    let ef = e as f32;
+    y += -2.121_944_4e-4 * ef;
+    y += -0.5 * z;
+    m + y + 0.693_359_4 * ef
+}
+
+multiversion! {
+    /// log(1 + e^x) in place, without overflow: max(x, 0) + log1p(e^-|x|).
+    pub fn softplus(x: &mut [f32]) {
+        for v in x.iter_mut() {
+            let t = exp_f32(-v.abs());
+            // log1p(t) = ln(u) t / (u - 1), u = 1 + t (corrects the rounding of u)
+            let u = 1.0 + t;
+            let l = if u == 1.0 { t } else { ln_f32(u) * (t / (u - 1.0)) };
+            *v = v.max(0.0) + l;
+        }
+    }
+}
+
 multiversion! {
     /// Depthwise 1-D convolution along time of a [T, C] sequence (zero padding
     /// ``k / 2`` on each side): out[t, c] = b[c] + sum_j w[j, c] x[t + j - k/2, c].
@@ -170,6 +207,23 @@ mod tests {
         }
         assert!(worst < 5e-7, "relative error {worst}");
         assert!(exp_f32(-200.0) < 1e-37 && exp_f32(-200.0) >= 0.0);
+    }
+
+    #[test]
+    fn softplus_accuracy() {
+        let mut worst = 0f32;
+        let mut x = -30.0f32;
+        while x < 30.0 {
+            let mut v = [x];
+            softplus(&mut v);
+            let want = if x > 0.0 { x + (-x).exp().ln_1p() } else { x.exp().ln_1p() };
+            worst = worst.max((v[0] - want).abs() / want.max(1e-30));
+            x += 0.0731;
+        }
+        assert!(worst < 1e-6, "relative error {worst}");
+        for &x in &[0.5f32, 1.0, 1.5, 3.0, 1e-3, 1e5] {
+            assert!((ln_f32(x) - x.ln()).abs() <= 2e-7 * x.ln().abs().max(1.0), "ln({x})");
+        }
     }
 
     #[test]

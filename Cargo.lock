@@ -799,7 +799,6 @@ dependencies = [
 name = "indra-engine"
 version = "0.1.0"
 dependencies = [
- "rayon",
  "thiserror",
 ]
 

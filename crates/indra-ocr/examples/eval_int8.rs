@@ -11,7 +11,8 @@ fn load_npy(p: &str) -> Gray {
     let hlen = u16::from_le_bytes([raw[8], raw[9]]) as usize;
     let header = std::str::from_utf8(&raw[10..10 + hlen]).unwrap();
     let s = &header[header.find("'shape': (").unwrap() + 10..];
-    let dims: Vec<usize> = s[..s.find(')').unwrap()].split(',').filter(|t| !t.trim().is_empty()).map(|t| t.trim().parse().unwrap()).collect();
+    let dims: Vec<usize> =
+        s[..s.find(')').unwrap()].split(',').filter(|t| !t.trim().is_empty()).map(|t| t.trim().parse().unwrap()).collect();
     Gray::from_vec(dims[1], dims[0], raw[10 + hlen..].to_vec())
 }
 
@@ -66,6 +67,9 @@ fn main() {
             }
         }
     }
-    println!("int8: {same}/{lines} lines identical, {cdiff} character edits in {chars} characters ({:.3}%)", 100.0 * cdiff as f64 / chars.max(1) as f64);
+    println!(
+        "int8: {same}/{lines} lines identical, {cdiff} character edits in {chars} characters ({:.3}%)",
+        100.0 * cdiff as f64 / chars.max(1) as f64
+    );
     println!("recognizer time: float {:.0} ms, int8 {:.0} ms", tf * 1000.0, tq * 1000.0);
 }

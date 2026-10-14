@@ -18,8 +18,9 @@ fn load_npy(p: &str) -> Gray {
 fn main() {
     let g = load_npy(&std::env::args().nth(1).expect("PAGE.npy"));
     let dir = indra_ocr::models::model_dir(None, None, false).unwrap();
-    let mut native = indra_ocr::native_backend::NativeBackend::new(&dir, 1, false).unwrap();
-    let mut ort = indra_ocr::ort_backend::OrtBackend::new(&dir, 1, false).unwrap();
+    let threads: usize = std::env::var("BENCH_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let mut native = indra_ocr::native_backend::NativeBackend::new(&dir, threads, false).unwrap();
+    let mut ort = indra_ocr::ort_backend::OrtBackend::new(&dir, threads, false).unwrap();
     let (x, _) = indra_ocr::det_post::page_to_input(&g, 1024);
     let oi = indra_ocr::pipeline::orient_input(&g, 768);
     println!("det input {}x{}", x.w, x.h);

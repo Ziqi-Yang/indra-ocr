@@ -565,6 +565,11 @@ fn step_name(s: &Step) -> &'static str {
         Step::Conv { kind: ConvKind::Single { .. }, .. } => "cnn.conv1ch",
         Step::Resize { .. } => "cnn.resize",
         Step::Add { .. } => "cnn.add",
+        Step::Unary { .. } => "cnn.unary",
+        Step::ConcatC { .. } => "cnn.concat",
+        Step::SpaceToDepth { .. } | Step::DepthToSpace { .. } => "cnn.space_depth",
+        Step::SliceC { .. } => "cnn.slice",
+        Step::MeanHW { .. } | Step::Gemm { .. } | Step::Softmax { .. } => "cnn.head",
         _ => "cnn.other",
     }
 }
@@ -783,39 +788,84 @@ fn dw_impl<const C: usize>(
     ow: usize,
     bcast: bool,
 ) {
-    // C > 0: the channel count is known at compile time (straight vector code)
-    let c = if C > 0 { C } else { c };
+    if C == 0 {
+        return dw_dyn(x, h, w, c, wt, b, k, stride, pad, out, oy0, rows, ow, bcast);
+    }
+    // One output pixel at a time, every tap summed in registers (C is known at
+    // compile time), one store per pixel.
+    let xc = if bcast { 1 } else { C };
+    for r in 0..rows {
+        let oy = oy0 + r;
+        let i0 = pad.saturating_sub(oy * stride);
+        let i1 = (h + pad).saturating_sub(oy * stride).min(k);
+        for ox in 0..ow {
+            let j0 = pad.saturating_sub(ox * stride);
+            let j1 = (w + pad).saturating_sub(ox * stride).min(k);
+            let mut acc = [0f32; C];
+            acc.copy_from_slice(&b[..C]);
+            for i in i0..i1 {
+                let iy = oy * stride + i - pad;
+                for j in j0..j1 {
+                    let ix = ox * stride + j - pad;
+                    let wr: &[f32; C] = wt[(i * k + j) * C..(i * k + j + 1) * C].try_into().unwrap();
+                    if bcast {
+                        let s = x[iy * w + ix];
+                        for ch in 0..C {
+                            acc[ch] += wr[ch] * s;
+                        }
+                    } else {
+                        let src: &[f32; C] = x[(iy * w + ix) * xc..(iy * w + ix + 1) * xc].try_into().unwrap();
+                        for ch in 0..C {
+                            acc[ch] += wr[ch] * src[ch];
+                        }
+                    }
+                }
+            }
+            out[(r * ow + ox) * C..(r * ow + ox + 1) * C].copy_from_slice(&acc);
+        }
+    }
+}
+
+/// ``dw_impl`` for a channel count without a compiled kernel.
+#[allow(clippy::too_many_arguments)]
+#[inline(always)]
+fn dw_dyn(
+    x: &[f32],
+    h: usize,
+    w: usize,
+    c: usize,
+    wt: &[f32],
+    b: &[f32],
+    k: usize,
+    stride: usize,
+    pad: usize,
+    out: &mut [f32],
+    oy0: usize,
+    rows: usize,
+    ow: usize,
+    bcast: bool,
+) {
     let xc = if bcast { 1 } else { c };
     for r in 0..rows {
         let oy = oy0 + r;
-        let orow = &mut out[r * ow * c..(r + 1) * ow * c];
-        for o in orow.chunks_exact_mut(c) {
-            o.copy_from_slice(&b[..c]);
-        }
-        for i in 0..k {
-            let iy = (oy * stride + i) as isize - pad as isize;
-            if iy < 0 || iy >= h as isize {
-                continue;
-            }
-            let xrow = &x[iy as usize * w * xc..(iy as usize + 1) * w * xc];
-            for j in 0..k {
-                let wr = &wt[(i * k + j) * c..(i * k + j + 1) * c];
-                // output columns whose input column ox * stride + j - pad is inside
-                let lo = pad.saturating_sub(j).div_ceil(stride);
-                let hi = ((w + pad).saturating_sub(j)).div_ceil(stride).min(ow);
-                for ox in lo..hi {
+        let i0 = pad.saturating_sub(oy * stride);
+        let i1 = (h + pad).saturating_sub(oy * stride).min(k);
+        for ox in 0..ow {
+            let j0 = pad.saturating_sub(ox * stride);
+            let j1 = (w + pad).saturating_sub(ox * stride).min(k);
+            let acc = &mut out[(r * ow + ox) * c..(r * ow + ox + 1) * c];
+            acc.copy_from_slice(&b[..c]);
+            for i in i0..i1 {
+                let iy = oy * stride + i - pad;
+                for j in j0..j1 {
                     let ix = ox * stride + j - pad;
-                    let o = &mut orow[ox * c..(ox + 1) * c];
+                    let wr = &wt[(i * k + j) * c..(i * k + j + 1) * c];
                     if bcast {
-                        let s = xrow[ix];
-                        for (o, &wv) in o.iter_mut().zip(wr) {
-                            *o += wv * s;
-                        }
+                        let s = x[iy * w + ix];
+                        acc.iter_mut().zip(wr).for_each(|(a, &wv)| *a += wv * s);
                     } else {
-                        let src = &xrow[ix * c..(ix + 1) * c];
-                        for ((o, &s), &wv) in o.iter_mut().zip(src).zip(wr) {
-                            *o += wv * s;
-                        }
+                        let src = &x[(iy * w + ix) * xc..(iy * w + ix + 1) * xc];
+                        acc.iter_mut().zip(wr).zip(src).for_each(|((a, &wv), &sv)| *a += wv * sv);
                     }
                 }
             }
@@ -862,7 +912,7 @@ fn unary(x: &mut [f32], op: Unary) {
         Unary::Relu => unary_act(x, Act::Relu),
         Unary::Sigmoid => x.iter_mut().for_each(|v| *v = crate::simd::sigmoid(*v)),
         // log(1 + e^x), without overflow
-        Unary::Softplus => x.iter_mut().for_each(|v| *v = if *v > 0.0 { *v + (-*v).exp().ln_1p() } else { v.exp().ln_1p() }),
+        Unary::Softplus => crate::simd::softplus(x),
     }
 }
 

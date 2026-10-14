@@ -35,7 +35,9 @@ pub struct QPackedB {
 pub fn available() -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        crate::cpu::isa() == crate::cpu::Isa::Avx512 && std::arch::is_x86_feature_detected!("avx512vnni") && std::arch::is_x86_feature_detected!("avx512bw")
+        crate::cpu::isa() == crate::cpu::Isa::Avx512
+            && std::arch::is_x86_feature_detected!("avx512vnni")
+            && std::arch::is_x86_feature_detected!("avx512bw")
     }
     #[cfg(not(target_arch = "x86_64"))]
     false

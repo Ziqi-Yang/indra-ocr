@@ -11,4 +11,3 @@ workspace = true
 
 [dependencies]
 thiserror.workspace = true
-rayon.workspace = true
