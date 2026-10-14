@@ -30,17 +30,15 @@ fn close(a: f64, b: f64, tol: f64) -> bool {
 fn stages_match_python() {
     let Some(root) = golden("pages") else { return };
     let mut ocr_plain = ocr(false);
+    let mut ocr_math: Option<Ocr> = None;
     let mut failures = vec![];
     let mut dirs: Vec<_> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().path()).collect();
     dirs.sort();
     for d in dirs {
         let name = d.file_name().unwrap().to_string_lossy().to_string();
-        if name.ends_with("_math") {
-            continue;
-        }
         let stages: Value = serde_json::from_str(&std::fs::read_to_string(d.join("stages.json")).unwrap()).unwrap();
         let g = gray(&d.join("gray.npy"));
-        let o = &mut ocr_plain;
+        let o = if name.ends_with("_math") { ocr_math.get_or_insert_with(|| ocr(true)) } else { &mut ocr_plain };
         // orientation and deskew
         let (up, k, skew) = o.upright(&g, true).unwrap();
         let want_up = gray(&d.join("upright.npy"));

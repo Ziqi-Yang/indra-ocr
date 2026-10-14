@@ -406,28 +406,111 @@ pub enum Border {
 
 /// The 2x2 bilinear sample of OpenCV's float warp kernels (4.11+): coordinates
 /// in float32, weights from the fraction, three fused multiply-adds.
-#[inline]
+#[inline(always)]
 fn bilinear_f32(p00: f32, p01: f32, p10: f32, p11: f32, a: f32, b: f32) -> f32 {
     let v0 = a.mul_add(p01 - p00, p00);
     let v1 = a.mul_add(p11 - p10, p10);
     b.mul_add(v1 - v0, v0)
 }
 
-/// Source position of each output pixel as OpenCV's warpAffine computes it:
-/// the inverted matrix in float32, x then y.
-fn warp_map(m: &[f64; 6], w: usize, h: usize, mut f: impl FnMut(usize, usize, f32, f32)) {
-    let mi = invert_affine(m).map(|v| v as f32);
-    for y in 0..h {
-        let mx = mi[1] * y as f32 + mi[2];
-        let my = mi[4] * y as f32 + mi[5];
-        for x in 0..w {
-            let xf = x as f32;
-            f(x, y, mi[0].mul_add(xf, mx), mi[3].mul_add(xf, my));
-        }
-    }
+/// Pixel types the warp kernels gather from.
+pub trait WarpPixel: Copy + Default + 'static {
+    const IS_U8: bool;
+}
+impl WarpPixel for u8 {
+    const IS_U8: bool = true;
+}
+impl WarpPixel for f32 {
+    const IS_U8: bool = false;
 }
 
-fn warp_affine<T: Copy + Default>(
+/// AVX2 kernel for the pixels of a row whose four taps are inside the source:
+/// 8 at a time, the same float operations as the scalar path (so the same
+/// result). Returns how many leading pixels of ``out`` it wrote, from ``x0``.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn warp_row_avx2<T: WarpPixel>(src: &Image<T>, mi: &[f32; 6], mx: f32, my: f32, x0: usize, out: &mut [T]) -> usize {
+    use std::arch::x86_64::*;
+    let (sw, sh) = (src.w as i32, src.h as i32);
+    let len = src.data.len() as i64;
+    let w = src.w as i32;
+    let base = src.data.as_ptr();
+    let mut x = x0;
+    unsafe {
+        let lane = _mm256_setr_ps(0., 1., 2., 3., 4., 5., 6., 7.);
+        let (m0, m3) = (_mm256_set1_ps(mi[0]), _mm256_set1_ps(mi[3]));
+        let (vmx, vmy) = (_mm256_set1_ps(mx), _mm256_set1_ps(my));
+        let zero = _mm256_setzero_si256();
+        let (lim_x, lim_y) = (_mm256_set1_epi32(sw - 1), _mm256_set1_epi32(sh - 1));
+        let vw = _mm256_set1_epi32(w);
+        while x + 8 <= out.len() {
+            let xf = _mm256_add_ps(_mm256_set1_ps(x as f32), lane);
+            let sx = _mm256_fmadd_ps(m0, xf, vmx);
+            let sy = _mm256_fmadd_ps(m3, xf, vmy);
+            let (fx, fy) = (_mm256_floor_ps(sx), _mm256_floor_ps(sy));
+            let (a, b) = (_mm256_sub_ps(sx, fx), _mm256_sub_ps(sy, fy));
+            let (ix, iy) = (_mm256_cvttps_epi32(fx), _mm256_cvttps_epi32(fy));
+            // inside: 0 <= ix < sw - 1 and 0 <= iy < sh - 1 (and no float overflow)
+            let ok = _mm256_and_si256(
+                _mm256_and_si256(_mm256_cmpgt_epi32(lim_x, ix), _mm256_cmpgt_epi32(lim_y, iy)),
+                _mm256_and_si256(_mm256_cmpgt_epi32(ix, _mm256_set1_epi32(-1)), _mm256_cmpgt_epi32(iy, _mm256_set1_epi32(-1))),
+            );
+            if _mm256_movemask_epi8(ok) != -1 {
+                break;
+            }
+            let idx = _mm256_add_epi32(_mm256_mullo_epi32(iy, vw), ix);
+            let idx2 = _mm256_add_epi32(idx, vw);
+            let (p00, p01, p10, p11);
+            if T::IS_U8 {
+                // one 32-bit load per row of taps (bytes idx, idx + 1): the last
+                // lane may read 2 bytes past a tap, so stay 4 bytes inside.
+                let last = _mm256_extract_epi32::<7>(idx2).max(_mm256_extract_epi32::<0>(idx2)) as i64;
+                if last + 4 > len {
+                    break;
+                }
+                let bp = base as *const i32;
+                let r0 = _mm256_i32gather_epi32::<1>(bp, idx);
+                let r1 = _mm256_i32gather_epi32::<1>(bp, idx2);
+                let ff = _mm256_set1_epi32(0xFF);
+                p00 = _mm256_cvtepi32_ps(_mm256_and_si256(r0, ff));
+                p01 = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32::<8>(r0), ff));
+                p10 = _mm256_cvtepi32_ps(_mm256_and_si256(r1, ff));
+                p11 = _mm256_cvtepi32_ps(_mm256_and_si256(_mm256_srli_epi32::<8>(r1), ff));
+            } else {
+                let fp = base as *const f32;
+                p00 = _mm256_i32gather_ps::<4>(fp, idx);
+                p01 = _mm256_i32gather_ps::<4>(fp, _mm256_add_epi32(idx, _mm256_set1_epi32(1)));
+                p10 = _mm256_i32gather_ps::<4>(fp, idx2);
+                p11 = _mm256_i32gather_ps::<4>(fp, _mm256_add_epi32(idx2, _mm256_set1_epi32(1)));
+            }
+            let v0 = _mm256_fmadd_ps(a, _mm256_sub_ps(p01, p00), p00);
+            let v1 = _mm256_fmadd_ps(a, _mm256_sub_ps(p11, p10), p10);
+            let v = _mm256_fmadd_ps(b, _mm256_sub_ps(v1, v0), v0);
+            let dst = out.as_mut_ptr().add(x);
+            if T::IS_U8 {
+                let i = _mm256_cvtps_epi32(v); // round half to even
+                let i = _mm256_min_epi32(_mm256_max_epi32(i, zero), _mm256_set1_epi32(255));
+                let mut tmp = [0i32; 8];
+                _mm256_storeu_si256(tmp.as_mut_ptr() as *mut __m256i, i);
+                let d = dst as *mut u8;
+                for k in 0..8 {
+                    *d.add(k) = tmp[k] as u8;
+                }
+            } else {
+                _mm256_storeu_ps(dst as *mut f32, v);
+            }
+            x += 8;
+        }
+    }
+    x - x0
+}
+
+/// warpAffine row by row: ``row(y, values)`` for each output row. Source
+/// positions are computed as OpenCV computes them (the inverted matrix in
+/// float32, one fused multiply-add per coordinate).
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn warp_rows_impl<T: WarpPixel, const SIMD: bool>(
     src: &Image<T>,
     m: &[f64; 6],
     w: usize,
@@ -436,9 +519,11 @@ fn warp_affine<T: Copy + Default>(
     value: T,
     to_f: impl Fn(T) -> f32,
     from_f: impl Fn(f32) -> T,
-) -> Image<T> {
-    let mut out = Image::new(w, h);
+    mut row: impl FnMut(usize, &[T]),
+) {
+    let mi = invert_affine(m).map(|v| v as f32);
     let (sw, sh) = (src.w as i64, src.h as i64);
+    let d = &src.data;
     let px = |x: i64, y: i64| -> f32 {
         match border {
             Border::Replicate => to_f(src.at(x.clamp(0, sw - 1) as usize, y.clamp(0, sh - 1) as usize)),
@@ -451,33 +536,100 @@ fn warp_affine<T: Copy + Default>(
             }
         }
     };
-    warp_map(m, w, h, |x, y, sx, sy| {
-        let (fx, fy) = (sx.floor(), sy.floor());
-        let (a, b) = (sx - fx, sy - fy);
-        let (ix, iy) = (fx as i64, fy as i64);
-        let v = if ix >= 0 && iy >= 0 && ix < sw - 1 && iy < sh - 1 {
-            let i = iy as usize * src.w + ix as usize;
-            let d = &src.data;
-            bilinear_f32(to_f(d[i]), to_f(d[i + 1]), to_f(d[i + src.w]), to_f(d[i + src.w + 1]), a, b)
-        } else if border == Border::Constant && (ix >= sw || ix + 1 < 0 || iy >= sh || iy + 1 < 0) {
-            out.data[y * w + x] = value;
-            return;
-        } else {
-            bilinear_f32(px(ix, iy), px(ix + 1, iy), px(ix, iy + 1), px(ix + 1, iy + 1), a, b)
-        };
-        out.data[y * w + x] = from_f(v);
-    });
-    out
+    let mut buf = vec![T::default(); w];
+    for y in 0..h {
+        let mx = mi[1] * y as f32 + mi[2];
+        let my = mi[4] * y as f32 + mi[5];
+        let mut x = 0;
+        while x < w {
+            #[cfg(target_arch = "x86_64")]
+            if SIMD {
+                // SAFETY: SIMD is set only when the CPU has AVX2 and FMA.
+                let n = unsafe { warp_row_avx2(src, &mi, mx, my, x, &mut buf) };
+                if n > 0 {
+                    x += n;
+                    continue;
+                }
+            }
+            let o = &mut buf[x];
+            let xf = x as f32;
+            x += 1;
+            let (sx, sy) = (mi[0].mul_add(xf, mx), mi[3].mul_add(xf, my));
+            let (fx, fy) = (sx.floor(), sy.floor());
+            let (a, b) = (sx - fx, sy - fy);
+            let (ix, iy) = (fx as i64, fy as i64);
+            *o = if ix >= 0 && iy >= 0 && ix < sw - 1 && iy < sh - 1 {
+                let i = iy as usize * src.w + ix as usize;
+                from_f(bilinear_f32(to_f(d[i]), to_f(d[i + 1]), to_f(d[i + src.w]), to_f(d[i + src.w + 1]), a, b))
+            } else if border == Border::Constant && (ix >= sw || ix + 1 < 0 || iy >= sh || iy + 1 < 0) {
+                value
+            } else {
+                from_f(bilinear_f32(px(ix, iy), px(ix + 1, iy), px(ix, iy + 1), px(ix + 1, iy + 1), a, b))
+            };
+        }
+        row(y, &buf);
+    }
+}
+
+/// ``warp_rows_impl`` compiled with hardware FMA (the fused multiply-adds are
+/// part of the result, so without FMA they run in software).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+#[allow(clippy::too_many_arguments)]
+unsafe fn warp_rows_fma<T: WarpPixel>(
+    src: &Image<T>,
+    m: &[f64; 6],
+    w: usize,
+    h: usize,
+    border: Border,
+    value: T,
+    to_f: impl Fn(T) -> f32,
+    from_f: impl Fn(f32) -> T,
+    row: impl FnMut(usize, &[T]),
+) {
+    warp_rows_impl::<T, true>(src, m, w, h, border, value, to_f, from_f, row)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn warp_rows<T: WarpPixel>(
+    src: &Image<T>,
+    m: &[f64; 6],
+    w: usize,
+    h: usize,
+    border: Border,
+    value: T,
+    to_f: impl Fn(T) -> f32,
+    from_f: impl Fn(f32) -> T,
+    row: impl FnMut(usize, &[T]),
+) {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("fma") && std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: the CPU has the features the function is compiled for.
+        return unsafe { warp_rows_fma(src, m, w, h, border, value, to_f, from_f, row) };
+    }
+    warp_rows_impl::<T, false>(src, m, w, h, border, value, to_f, from_f, row)
 }
 
 /// cv2.warpAffine of a uint8 image (INTER_LINEAR), output size (w, h).
 pub fn warp_affine_u8(src: &Gray, m: &[f64; 6], w: usize, h: usize, border: Border, value: u8) -> Gray {
-    warp_affine(src, m, w, h, border, value, |v| v as f32, |v| sat_u8(cv_round_f32(v)))
+    let mut out = Gray::new(w, h);
+    warp_rows(src, m, w, h, border, value, |v| v as f32, |v| sat_u8(cv_round_f32(v)), |y, r| out.row_mut(y).copy_from_slice(r));
+    out
 }
 
 /// cv2.warpAffine of a float32 image (INTER_LINEAR), output size (w, h).
 pub fn warp_affine_f32(src: &ImageF, m: &[f64; 6], w: usize, h: usize, border: Border, value: f32) -> ImageF {
-    warp_affine(src, m, w, h, border, value, |v| v, |v| v)
+    let mut out = ImageF::new(w, h);
+    warp_rows(src, m, w, h, border, value, |v| v, |v| v, |y, r| out.row_mut(y).copy_from_slice(r));
+    out
+}
+
+/// ``warp_affine_f32(..).row(y)`` summed for every row (NumPy's pairwise sum),
+/// without keeping the warped image.
+pub fn warp_affine_f32_row_sums(src: &ImageF, m: &[f64; 6], w: usize, h: usize, border: Border, value: f32) -> Vec<f32> {
+    let mut sums = vec![0f32; h];
+    warp_rows(src, m, w, h, border, value, |v| v, |v| v, |y, r| sums[y] = crate::py::pairwise_sum_f32(r));
+    sums
 }
 
 /// One component of ``connected_components``.

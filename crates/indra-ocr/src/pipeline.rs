@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::backend::{Backend, BackendError, RecModel};
 use crate::crop::{PAD_X, crop_line};
 use crate::det_post::{DetBox, decode, page_to_input};
-use crate::imgproc::{Border, Gray, ImageF, Interp, resize_u8, rot90_cw, rotation_matrix, warp_affine_f32, warp_affine_u8};
+use crate::imgproc::{Border, Gray, ImageF, Interp, resize_u8, rot90_cw, rotation_matrix, warp_affine_f32_row_sums, warp_affine_u8};
 use crate::layout::{Block, Cells, page_blocks, page_markdown};
 use crate::math::MathReader;
 use crate::models::{Meta, ModelError};
@@ -213,8 +213,7 @@ pub fn estimate_skew(gray: &Gray) -> f64 {
     }
     let c = (sw as f64 / 2.0, sh as f64 / 2.0);
     let sharpness = |a: f64| -> f32 {
-        let r = warp_affine_f32(&ink, &rotation_matrix(c, a, 1.0), sw, sh, Border::Constant, 0.0);
-        let p: Vec<f32> = (0..sh).map(|y| pairwise_sum_f32(r.row(y))).collect();
+        let p = warp_affine_f32_row_sums(&ink, &rotation_matrix(c, a, 1.0), sw, sh, Border::Constant, 0.0);
         let d: Vec<f32> = p.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).collect();
         pairwise_sum_f32(&d)
     };

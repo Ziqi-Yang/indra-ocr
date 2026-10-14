@@ -4,3 +4,4 @@
 *.npy
 /result
 .direnv
+/tests/fixtures/inputs/
