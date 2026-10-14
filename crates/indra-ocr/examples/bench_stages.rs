@@ -30,4 +30,15 @@ fn main() {
     time("orient_input", 5, || orient_input(&g, 768));
     time("resize area 800", 5, || resize_u8(&g, 800 * g.w / g.h, 800, Interp::Area));
     time("rotate_page", 5, || indra_ocr::pipeline::rotate_page(&g, 1.3));
+    let (x, _) = indra_ocr::det_post::page_to_input(&g, 1024);
+    time("page_to_input 1024", 5, || indra_ocr::det_post::page_to_input(&g, 1024));
+    let dir = indra_ocr::models::model_dir(None, None, false).unwrap();
+    let mut nb = indra_ocr::native_backend::NativeBackend::new(&dir, 1, false).unwrap();
+    use indra_ocr::backend::Backend;
+    let out = nb.det(&x).unwrap();
+    time("det net", 5, || nb.det(&x).unwrap());
+    time("det decode", 5, || indra_ocr::det_post::decode(&out.data, out.h, out.w, 0.5, 2));
+    let boxes = indra_ocr::det_post::decode(&out.data, out.h, out.w, 0.5, 2);
+    let mh = indra_ocr::py::median_f32(&boxes.iter().map(|b| b.y1 - b.y0).collect::<Vec<_>>());
+    println!("{} boxes, median height {mh:.1} (second pass below 9)", boxes.len());
 }

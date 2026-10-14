@@ -282,20 +282,53 @@ fn resize_area_u8(src: &Gray, dw: usize, dh: usize) -> Gray {
     let scale_y = src.h as f64 / dh as f64;
     let xtab = area_tab(src.w, dw, scale_x);
     let ytab = area_tab(src.h, dh, scale_y);
+    // Per output column: its first source column and weights. A column's
+    // taps are consecutive source columns, in table order, so summing them in
+    // that order gives OpenCV's float result exactly.
+    let kmax = {
+        let mut counts = vec![0usize; dw];
+        for t in &xtab {
+            counts[t.di] += 1;
+        }
+        counts.into_iter().max().unwrap_or(1)
+    };
+    let mut start = vec![usize::MAX; dw];
+    let mut alpha = vec![0f32; dw * kmax];
+    let mut ntaps = vec![0usize; dw];
+    for t in &xtab {
+        if start[t.di] == usize::MAX {
+            start[t.di] = t.si;
+        }
+        debug_assert_eq!(t.si, start[t.di] + ntaps[t.di], "area taps are consecutive");
+        alpha[t.di * kmax + ntaps[t.di]] = t.alpha;
+        ntaps[t.di] += 1;
+    }
     let mut out = Gray::new(dw, dh);
     let mut buf = vec![0f32; dw];
     let mut sum = vec![0f32; dw];
     let mut prev_dy = ytab.first().map_or(0, |t| t.di);
+    let hrow = |s: &[u8], buf: &mut [f32]| {
+        for dx in 0..dw {
+            let (s0, n) = (start[dx], ntaps[dx]);
+            let a = &alpha[dx * kmax..dx * kmax + n];
+            let mut acc = 0f32;
+            for (k, &w) in a.iter().enumerate() {
+                acc += s[s0 + k] as f32 * w;
+            }
+            buf[dx] = acc;
+        }
+    };
+    let mut last_si = usize::MAX;
     for t in &ytab {
-        let s = src.row(t.si);
-        buf.fill(0.0);
-        for x in &xtab {
-            buf[x.di] += s[x.si] as f32 * x.alpha;
+        // a row on the boundary of two output rows comes twice in a row
+        if t.si != last_si {
+            hrow(src.row(t.si), &mut buf);
+            last_si = t.si;
         }
         if t.di != prev_dy {
             let d = out.row_mut(prev_dy);
             for dx in 0..dw {
-                d[dx] = sat_u8(cv_round_f32(sum[dx]));
+                d[dx] = sat_u8(round_even_small(sum[dx]));
                 sum[dx] = t.alpha * buf[dx];
             }
             prev_dy = t.di;
@@ -307,9 +340,15 @@ fn resize_area_u8(src: &Gray, dw: usize, dh: usize) -> Gray {
     }
     let d = out.row_mut(prev_dy);
     for dx in 0..dw {
-        d[dx] = sat_u8(cv_round_f32(sum[dx]));
+        d[dx] = sat_u8(round_even_small(sum[dx]));
     }
     out
+}
+
+/// Round half to even, for values well inside +-2^22 (pixel sums).
+#[inline]
+fn round_even_small(v: f32) -> i32 {
+    if v.abs() < 4_000_000.0 { ((v + 12_582_912.0) - 12_582_912.0) as i32 } else { cv_round_f32(v) }
 }
 
 /// cv2.resize of a uint8 image to (dw, dh).
