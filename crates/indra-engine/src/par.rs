@@ -2,11 +2,16 @@
 //! a feature map) over a pool of threads. With one thread (the default, and
 //! what page-parallel workers use) everything runs on the calling thread.
 //!
-//! The pool's idle workers block (no spinning): a model call alternates many
-//! short parallel steps with serial ones, and spinning workers would take CPU
-//! from the serial steps (badly so on virtual machines).
+//! A model call alternates many short parallel steps with serial ones. Idle
+//! workers spin for a moment (so back-to-back steps start without a wake-up,
+//! which is costly on virtual machines), then block (so long serial phases,
+//! such as PDF rendering, keep their CPU).
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+/// How long an idle worker, or a waiting submitter, spins before blocking.
+const SPIN: Duration = Duration::from_micros(50);
 use std::sync::{Arc, Condvar, Mutex};
 
 /// One parallel step: ``n`` tasks, claimed by index.
@@ -32,7 +37,7 @@ impl Job {
             }
             // SAFETY: the submitter keeps the closure alive until left == 0.
             unsafe { (*self.f)(i) };
-            last = self.left.fetch_sub(1, Ordering::AcqRel) == 1;
+            last = self.left.fetch_sub(1, Ordering::SeqCst) == 1;
         }
     }
 }
@@ -41,6 +46,12 @@ struct Shared {
     state: Mutex<State>,
     wake: Condvar,
     done: Condvar,
+    /// the generation of the latest job (read without the lock while spinning)
+    epoch: AtomicU64,
+    /// workers blocked on ``wake``
+    sleepers: AtomicUsize,
+    /// the submitter is blocked on ``done``
+    waiting: AtomicUsize,
 }
 
 struct State {
@@ -74,6 +85,9 @@ impl Par {
             state: Mutex::new(State { job: None, generation: 0, quit: false }),
             wake: Condvar::new(),
             done: Condvar::new(),
+            epoch: AtomicU64::new(0),
+            sleepers: AtomicUsize::new(0),
+            waiting: AtomicUsize::new(0),
         });
         let workers = (1..threads)
             .map(|_| {
@@ -81,10 +95,17 @@ impl Par {
                 std::thread::spawn(move || {
                     let mut seen = 0u64;
                     loop {
+                        // spin a moment for the next step, then sleep
+                        let t0 = Instant::now();
+                        while sh.epoch.load(Ordering::Acquire) == seen && t0.elapsed() < SPIN {
+                            std::hint::spin_loop();
+                        }
                         let job = {
                             let mut st = sh.state.lock().unwrap();
                             while !st.quit && (st.generation == seen || st.job.is_none()) {
+                                sh.sleepers.fetch_add(1, Ordering::SeqCst);
                                 st = sh.wake.wait(st).unwrap();
+                                sh.sleepers.fetch_sub(1, Ordering::SeqCst);
                             }
                             if st.quit {
                                 return;
@@ -92,7 +113,7 @@ impl Par {
                             seen = st.generation;
                             st.job.clone().unwrap()
                         };
-                        if job.work() {
+                        if job.work() && sh.waiting.load(Ordering::SeqCst) > 0 {
                             let _g = sh.state.lock().unwrap();
                             sh.done.notify_all();
                         }
@@ -123,13 +144,23 @@ impl Par {
             let mut st = sh.state.lock().unwrap();
             st.job = Some(job.clone());
             st.generation += 1;
-            sh.wake.notify_all();
+            sh.epoch.store(st.generation, Ordering::Release);
+            if sh.sleepers.load(Ordering::SeqCst) > 0 {
+                sh.wake.notify_all();
+            }
         }
         job.work();
+        // the last tasks are short: spin, then block
+        let t0 = Instant::now();
+        while job.left.load(Ordering::Acquire) != 0 && t0.elapsed() < SPIN {
+            std::hint::spin_loop();
+        }
         let mut st = sh.state.lock().unwrap();
-        while job.left.load(Ordering::Acquire) != 0 {
+        sh.waiting.fetch_add(1, Ordering::SeqCst);
+        while job.left.load(Ordering::SeqCst) != 0 {
             st = sh.done.wait(st).unwrap();
         }
+        sh.waiting.fetch_sub(1, Ordering::SeqCst);
         st.job = None;
     }
 
