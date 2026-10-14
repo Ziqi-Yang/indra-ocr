@@ -5,3 +5,4 @@
 /result
 .direnv
 /tests/fixtures/inputs/
+/tests/fixtures/bench/

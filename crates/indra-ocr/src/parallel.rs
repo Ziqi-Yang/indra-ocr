@@ -154,12 +154,26 @@ fn pooled(
         plan.iter().filter_map(|u| u.as_ref().ok()).flatten().cloned().enumerate().collect();
     let queue = Arc::new(Mutex::new(units.into_iter()));
     let (tx, rx) = mpsc::channel::<(usize, Result<Vec<(usize, Page)>, InputError>)>();
-    // Build the workers' pipelines first, so a model error stops the run before any work.
-    let convs: Vec<Converter> = (0..workers).map(|_| load(opts, THREADS_PER_WORKER)).collect::<Result<_, _>>()?;
+    // Each worker builds its own pipeline; the first model error stops the run.
+    let load_err: Mutex<Option<OcrError>> = Mutex::new(None);
     std::thread::scope(|s| {
-        for mut conv in convs {
-            let (queue, tx) = (queue.clone(), tx.clone());
+        for wk in 0..workers {
+            let (queue, tx, load_err) = (queue.clone(), tx.clone(), &load_err);
             s.spawn(move || {
+                // this worker's own pdfium (see pdfium::instance)
+                #[cfg(feature = "pdf")]
+                let _ = crate::pdfium::use_instance(wk);
+                #[cfg(not(feature = "pdf"))]
+                let _ = wk;
+                let mut conv = match load(opts, THREADS_PER_WORKER) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        load_err.lock().unwrap().get_or_insert(e);
+                        // stop the others: nothing more to hand out
+                        while queue.lock().unwrap().next().is_some() {}
+                        return;
+                    }
+                };
                 #[cfg(feature = "pdf")]
                 let mut doc: Option<(usize, crate::pdfium::Document)> = None;
                 loop {
@@ -232,5 +246,8 @@ fn pooled(
         }
         emit(&mut done, &mut next_unit, &mut pending);
     });
-    Ok(())
+    match load_err.into_inner().unwrap() {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }

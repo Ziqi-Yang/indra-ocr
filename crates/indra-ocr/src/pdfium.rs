@@ -1,6 +1,7 @@
 //! The few pdfium functions the pipeline calls, loaded from the shared library
-//! at run time. pdfium is not thread-safe: every call runs under one
-//! process-wide lock (``with_pdfium``).
+//! at run time. pdfium is not thread-safe: every call runs under its
+//! instance's lock, and parallel workers each load their own instance (a
+//! private copy of the library file, see ``instance``).
 //!
 //! The library is PDFIUM_LIB (a file), or libpdfium in PDFIUM_DYNAMIC_LIB_PATH
 //! (a folder), next to the executable, or wherever the dynamic loader finds it.
@@ -10,6 +11,7 @@
 use std::ffi::{CString, c_char, c_double, c_float, c_int, c_uint, c_ulong, c_void};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
+
 
 use crate::imgproc::Gray;
 use crate::io::InputError;
@@ -114,37 +116,130 @@ fn candidates() -> Vec<PathBuf> {
     c
 }
 
-fn load() -> Result<Api, String> {
+fn load_from(p: &Path) -> Result<Api, String> {
+    let lib = unsafe { libloading::Library::new(p) }.map_err(|e| format!("{}: {e}", p.display()))?;
+    let api = unsafe { Api::load(lib)? };
+    let cfg = LibraryConfig {
+        version: 2,
+        user_font_paths: std::ptr::null(),
+        isolate: std::ptr::null_mut(),
+        v8_embedder_slot: 0,
+        platform: std::ptr::null_mut(),
+        renderer_type: 0,
+    };
+    unsafe { (api.FPDF_InitLibraryWithConfig)(&cfg) };
+    Ok(api)
+}
+
+/// The library file that loads, from the candidate locations.
+fn find_library() -> Result<(PathBuf, Api), String> {
     let mut errs = vec![];
     for p in candidates() {
-        match unsafe { libloading::Library::new(&p) } {
-            Ok(lib) => {
-                let api = unsafe { Api::load(lib)? };
-                let cfg = LibraryConfig {
-                    version: 2,
-                    user_font_paths: std::ptr::null(),
-                    isolate: std::ptr::null_mut(),
-                    v8_embedder_slot: 0,
-                    platform: std::ptr::null_mut(),
-                    renderer_type: 0,
-                };
-                unsafe { (api.FPDF_InitLibraryWithConfig)(&cfg) };
-                return Ok(api);
+        match load_from(&p) {
+            Ok(api) => {
+                // the file the loader actually opened (for copies)
+                let real = if p.is_file() { p.clone() } else { loaded_path(&p).unwrap_or(p.clone()) };
+                return Ok((real, api));
             }
-            Err(e) => errs.push(format!("{}: {e}", p.display())),
+            Err(e) => errs.push(e),
         }
     }
     Err(format!("cannot load pdfium (set PDFIUM_LIB or PDFIUM_DYNAMIC_LIB_PATH): {}", errs.join("; ")))
 }
 
-static PDFIUM: OnceLock<Result<Mutex<Api>, String>> = OnceLock::new();
+/// Where the dynamic loader found a bare library name (Linux: /proc/self/maps).
+fn loaded_path(name: &Path) -> Option<PathBuf> {
+    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+    let n = name.file_name()?.to_string_lossy().to_string();
+    maps.lines().filter_map(|l| l.split_whitespace().nth(5)).find(|p| p.ends_with(&n)).map(PathBuf::from)
+}
 
-/// The library, locked for the calling thread.
-pub fn lock() -> Result<MutexGuard<'static, Api>, InputError> {
-    match PDFIUM.get_or_init(|| load().map(Mutex::new)) {
-        Ok(m) => Ok(m.lock().unwrap_or_else(|e| e.into_inner())),
-        Err(e) => Err(InputError(e.clone())),
+/// One loaded copy of pdfium with its own global state and its own lock.
+pub struct Instance {
+    api: Mutex<Api>,
+}
+
+impl Instance {
+    /// The library, locked for the calling thread.
+    pub fn lock(&self) -> MutexGuard<'_, Api> {
+        let t0 = std::time::Instant::now();
+        let g = self.api.lock().unwrap_or_else(|e| e.into_inner());
+        LOCK_WAIT_NS.fetch_add(t0.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        g
     }
+}
+
+struct Pool {
+    path: PathBuf,
+    instances: Mutex<Vec<std::sync::Arc<Instance>>>,
+}
+
+static POOL: OnceLock<Result<Pool, String>> = OnceLock::new();
+
+fn pool() -> Result<&'static Pool, InputError> {
+    POOL.get_or_init(|| {
+        let (path, api) = find_library()?;
+        Ok(Pool { path, instances: Mutex::new(vec![std::sync::Arc::new(Instance { api: Mutex::new(api) })]) })
+    })
+    .as_ref()
+    .map_err(|e| InputError(e.clone()))
+}
+
+/// Nanoseconds threads spent waiting for a pdfium lock (for profiling).
+pub static LOCK_WAIT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+thread_local! {
+    static THREAD_INSTANCE: std::cell::RefCell<Option<std::sync::Arc<Instance>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Instance ``k`` of the library: 0 is the library itself, the others are
+/// private copies of the file (a loaded library's globals are per file, so
+/// copies run in parallel). Falls back to instance 0 when a copy fails.
+pub fn instance(k: usize) -> Result<std::sync::Arc<Instance>, InputError> {
+    let pool = pool()?;
+    let mut inst = pool.instances.lock().unwrap();
+    if k < inst.len() {
+        return Ok(inst[k].clone());
+    }
+    let copies = std::env::var("INDRA_OCR_PDFIUM_COPIES").map_or(true, |v| v != "0");
+    while inst.len() <= k {
+        let n = inst.len();
+        let made = copies.then(|| copy_library(&pool.path, n)).flatten();
+        match made {
+            Some(api) => inst.push(std::sync::Arc::new(Instance { api: Mutex::new(api) })),
+            None => return Ok(inst[0].clone()),
+        }
+    }
+    Ok(inst[k].clone())
+}
+
+/// Load a private copy of the library file (removed again once loaded).
+fn copy_library(path: &Path, n: usize) -> Option<Api> {
+    let dir = std::env::temp_dir().join(format!("indra-ocr-pdfium-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    let ext = path.extension().map_or(String::new(), |e| format!(".{}", e.to_string_lossy()));
+    let copy = dir.join(format!("pdfium-{n}{ext}"));
+    std::fs::copy(path, &copy).ok()?;
+    let api = load_from(&copy).ok();
+    // A loaded library stays mapped after its file is gone (not on Windows,
+    // where the file is locked; it is left for the OS to clean).
+    let _ = std::fs::remove_file(&copy);
+    let _ = std::fs::remove_dir(&dir);
+    api
+}
+
+/// Make this thread open its documents with instance ``k``.
+pub fn use_instance(k: usize) -> Result<(), InputError> {
+    let inst = instance(k)?;
+    THREAD_INSTANCE.with(|t| *t.borrow_mut() = Some(inst));
+    Ok(())
+}
+
+fn thread_instance() -> Result<std::sync::Arc<Instance>, InputError> {
+    if let Some(i) = THREAD_INSTANCE.with(|t| t.borrow().clone()) {
+        return Ok(i);
+    }
+    instance(0)
 }
 
 /// pypdfium2's wording of pdfium's error codes.
@@ -164,6 +259,7 @@ fn error_text(code: c_ulong) -> &'static str {
 /// An open PDF document. Every method takes the pdfium lock.
 pub struct Document {
     doc: DOC,
+    inst: std::sync::Arc<Instance>,
 }
 
 // The handle is only used under the pdfium lock.
@@ -173,7 +269,8 @@ impl Document {
     /// Open a PDF; a locked one without the right password is an InputError
     /// saying so.
     pub fn open(path: &Path, password: Option<&str>) -> Result<Document, InputError> {
-        let api = lock()?;
+        let inst = thread_instance()?;
+        let api = inst.lock();
         let cpath = CString::new(path.to_string_lossy().as_bytes()).map_err(|_| InputError(format!("{}: bad path", path.display())))?;
         let cpw = password.map(|p| CString::new(p).unwrap_or_default());
         let doc = unsafe { (api.FPDF_LoadDocument)(cpath.as_ptr(), cpw.as_ref().map_or(std::ptr::null(), |p| p.as_ptr())) };
@@ -185,17 +282,18 @@ impl Document {
                 format!("{}: cannot open the PDF (Failed to load document (PDFium: {}).)", path.display(), error_text(code))
             }));
         }
-        Ok(Document { doc })
+        drop(api);
+        Ok(Document { doc, inst })
     }
 
     pub fn page_count(&self) -> usize {
-        let api = lock().expect("pdfium is loaded");
+        let api = self.inst.lock();
         unsafe { (api.FPDF_GetPageCount)(self.doc).max(0) as usize }
     }
 
     /// Run ``f`` on page ``index`` with the library locked.
     pub fn with_page<T>(&self, index: usize, f: impl FnOnce(&Api, PageRef) -> T) -> Result<T, InputError> {
-        let api = lock()?;
+        let api = self.inst.lock();
         let page = unsafe { (api.FPDF_LoadPage)(self.doc, index as c_int) };
         if page.is_null() {
             let code = unsafe { (api.FPDF_GetLastError)() };
@@ -209,9 +307,8 @@ impl Document {
 
 impl Drop for Document {
     fn drop(&mut self) {
-        if let Ok(api) = lock() {
-            unsafe { (api.FPDF_CloseDocument)(self.doc) };
-        }
+        let api = self.inst.lock();
+        unsafe { (api.FPDF_CloseDocument)(self.doc) };
     }
 }
 

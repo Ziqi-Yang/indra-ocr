@@ -168,6 +168,10 @@ fn main() -> ExitCode {
         eprintln!("indra-ocr: {e}");
         return ExitCode::from(1);
     }
+    if std::env::var_os("INDRA_OCR_PROFILE").is_some() {
+        let ns = indra_ocr::pdfium::LOCK_WAIT_NS.load(std::sync::atomic::Ordering::Relaxed);
+        eprintln!("indra-ocr: pdfium lock wait {:.0} ms (all threads)", ns as f64 / 1e6);
+    }
     if failed > 0 {
         eprintln!("indra-ocr: {failed} of {} inputs failed", a.inputs.len());
         return ExitCode::from(1);
