@@ -69,6 +69,9 @@ struct Args {
     /// print per-page timings to stderr
     #[arg(long)]
     timings: bool,
+    /// inference engine: native (indra-engine) or ort (ONNX Runtime)
+    #[arg(long, default_value = "ort")]
+    engine: indra_ocr::Engine,
 }
 
 /// Python's str(Path(p)): no leading "./".
@@ -100,7 +103,7 @@ fn main() -> ExitCode {
             pdf_order: !a.model_order,
             image_ocr: !a.no_image_ocr,
         },
-        ..Default::default()
+        engine: a.engine,
     };
     let ext = match a.format {
         Format::Md => ".md",

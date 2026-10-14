@@ -22,6 +22,19 @@ pub enum Engine {
     /// ONNX Runtime (the reference)
     #[default]
     Ort,
+    /// The native engine (indra-engine)
+    Native,
+}
+
+impl std::str::FromStr for Engine {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "ort" => Ok(Engine::Ort),
+            "native" => Ok(Engine::Native),
+            _ => Err(format!("engine must be ort or native, not {s:?}")),
+        }
+    }
 }
 
 /// Everything ``load`` needs to build a pipeline.
@@ -43,6 +56,10 @@ pub fn load(opts: &LoadOptions, threads: usize) -> Result<Converter, OcrError> {
         Engine::Ort => Ocr::with_ort(&dir, threads.max(1), opts.ocr.clone(), opts.math)?,
         #[cfg(not(feature = "ort"))]
         Engine::Ort => return Err(OcrError::Other("this build has no ONNX Runtime engine (feature \"ort\")".into())),
+        #[cfg(feature = "native")]
+        Engine::Native => Ocr::with_native(&dir, threads.max(1), opts.ocr.clone(), opts.math)?,
+        #[cfg(not(feature = "native"))]
+        Engine::Native => return Err(OcrError::Other("this build has no native engine (feature \"native\")".into())),
     };
     Ok(Converter::new(ocr, opts.convert.clone()))
 }

@@ -1,0 +1,175 @@
+//! Element-wise kernels written once in plain Rust and compiled per ISA
+//! (``multiversion!``), so the compiler vectorizes them for the CPU at hand.
+
+use crate::cpu::{Isa, isa};
+
+/// Define ``$name`` as plain Rust, plus copies compiled for AVX-512 and AVX2,
+/// chosen at run time.
+macro_rules! multiversion {
+    ($(#[$m:meta])* $vis:vis fn $name:ident($($arg:ident : $ty:ty),* $(,)?) $(-> $ret:ty)? $body:block) => {
+        $(#[$m])*
+        $vis fn $name($($arg: $ty),*) $(-> $ret)? {
+            #[inline(always)]
+            fn imp($($arg: $ty),*) $(-> $ret)? $body
+            #[cfg(target_arch = "x86_64")]
+            #[target_feature(enable = "avx512f,avx2,fma")]
+            unsafe fn avx512($($arg: $ty),*) $(-> $ret)? { imp($($arg),*) }
+            #[cfg(target_arch = "x86_64")]
+            #[target_feature(enable = "avx2,fma")]
+            unsafe fn avx2($($arg: $ty),*) $(-> $ret)? { imp($($arg),*) }
+            match $crate::cpu::isa() {
+                #[cfg(target_arch = "x86_64")]
+                $crate::cpu::Isa::Avx512 => unsafe { avx512($($arg),*) },
+                #[cfg(target_arch = "x86_64")]
+                $crate::cpu::Isa::Avx2 => unsafe { avx2($($arg),*) },
+                _ => imp($($arg),*),
+            }
+        }
+    };
+}
+
+pub(crate) use multiversion;
+
+/// e^x for float32, branch-free (vectorizes): 2^n times a degree-6 polynomial
+/// of the remainder; relative error about 2e-7.
+#[inline(always)]
+pub fn exp_f32(x: f32) -> f32 {
+    let x = x.clamp(-87.33, 88.72);
+    let n = (x * std::f32::consts::LOG2_E + 0.5).floor();
+    // r = x - n ln 2, in two parts for precision
+    let r = x - n * 0.693_359_4 + n * 2.121_944_4e-4;
+    let p = 1.0 + r * (1.0 + r * (0.5 + r * (0.166_666_67 + r * (0.041_666_45 + r * (0.008_333_45 + r * 0.001_394_8)))));
+    let bits = ((n as i32 + 127) as u32) << 23;
+    p * f32::from_bits(bits)
+}
+
+multiversion! {
+    /// Depthwise 1-D convolution along time of a [T, C] sequence (zero padding
+    /// ``k / 2`` on each side): out[t, c] = b[c] + sum_j w[j, c] x[t + j - k/2, c].
+    /// ``w`` is laid out [K, C].
+    pub fn dwconv1d(x: &[f32], t: usize, c: usize, w: &[f32], b: &[f32], out: &mut [f32]) {
+        let k = w.len() / c;
+        let half = k / 2;
+        for i in 0..t {
+            let o = &mut out[i * c..(i + 1) * c];
+            o.copy_from_slice(&b[..c]);
+            for j in 0..k {
+                let src = i + j;
+                if src < half || src - half >= t {
+                    continue;
+                }
+                let xr = &x[(src - half) * c..(src - half + 1) * c];
+                let wr = &w[j * c..(j + 1) * c];
+                for ((o, &xv), &wv) in o.iter_mut().zip(xr).zip(wr) {
+                    *o += wv * xv;
+                }
+            }
+        }
+    }
+}
+
+multiversion! {
+    /// Column sums of a [T, C] matrix into ``out`` [C].
+    pub fn col_sums(x: &[f32], c: usize, out: &mut [f32]) {
+        out[..c].fill(0.0);
+        for row in x.chunks_exact(c) {
+            for (o, &v) in out.iter_mut().zip(row) {
+                *o += v;
+            }
+        }
+    }
+}
+
+multiversion! {
+    /// Each row of a [T, C] matrix times ``s`` [C], in place.
+    pub fn scale_cols(x: &mut [f32], s: &[f32]) {
+        let c = s.len();
+        for row in x.chunks_exact_mut(c) {
+            for (v, &f) in row.iter_mut().zip(s) {
+                *v *= f;
+            }
+        }
+    }
+}
+
+multiversion! {
+    /// The index of the first maximum of ``row`` and the maximum.
+    pub fn argmax_row(row: &[f32]) -> (usize, f32) {
+        // the maximum first (vectorizes), then its first position
+        let mut m = f32::NEG_INFINITY;
+        for &v in row {
+            m = m.max(v);
+        }
+        let i = row.iter().position(|&v| v == m).unwrap_or(0);
+        (i, m)
+    }
+}
+
+multiversion! {
+    /// sum_j exp(row[j] - m)
+    pub fn sum_exp(row: &[f32], m: f32) -> f32 {
+        let mut acc = [0f32; 16];
+        let mut chunks = row.chunks_exact(16);
+        for ch in &mut chunks {
+            for (a, &v) in acc.iter_mut().zip(ch) {
+                *a += exp_f32(v - m);
+            }
+        }
+        let mut s: f32 = acc.iter().sum();
+        for &v in chunks.remainder() {
+            s += exp_f32(v - m);
+        }
+        s
+    }
+}
+
+/// The logistic function.
+#[inline]
+pub fn sigmoid(x: f32) -> f32 {
+    1.0 / (1.0 + (-x).exp())
+}
+
+/// For tests and reports: which ISA the kernels run.
+pub fn active_isa() -> Isa {
+    isa()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exp_is_accurate() {
+        let mut worst = 0f32;
+        let mut x = -87.0f32;
+        while x < 88.0 {
+            let (a, b) = (exp_f32(x), x.exp());
+            worst = worst.max(((a - b) / b).abs());
+            x += 0.0137;
+        }
+        assert!(worst < 5e-7, "relative error {worst}");
+        assert!(exp_f32(-200.0) < 1e-37 && exp_f32(-200.0) >= 0.0);
+    }
+
+    #[test]
+    fn dwconv_matches_definition() {
+        let (t, c, k) = (7, 3, 5);
+        let x: Vec<f32> = (0..t * c).map(|i| i as f32 * 0.1).collect();
+        let w: Vec<f32> = (0..k * c).map(|i| (i as f32 - 7.0) * 0.05).collect();
+        let b = [0.5, -0.5, 0.25];
+        let mut out = vec![0f32; t * c];
+        dwconv1d(&x, t, c, &w, &b, &mut out);
+        for i in 0..t {
+            for ch in 0..c {
+                let mut s = b[ch];
+                for j in 0..k {
+                    let src = i as isize + j as isize - 2;
+                    if (0..t as isize).contains(&src) {
+                        s += w[j * c + ch] * x[src as usize * c + ch];
+                    }
+                }
+                assert!((out[i * c + ch] - s).abs() < 1e-5);
+            }
+        }
+    }
+}

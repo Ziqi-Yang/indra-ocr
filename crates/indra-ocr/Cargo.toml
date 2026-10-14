@@ -7,7 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["ort", "pdf", "download"]
+default = ["ort", "native", "pdf", "download"]
+native = ["dep:indra-engine"]
 ort = ["dep:ort"]
 pdf = ["dep:libloading"]
 download = ["dep:hf-hub"]
@@ -17,6 +18,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
+indra-engine = { workspace = true, optional = true }
 ort = { version = "=2.0.0-rc.14", default-features = false, features = ["load-dynamic", "std", "ndarray"], optional = true }
 libloading = { version = "0.8", optional = true }
 hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"], optional = true }
@@ -27,3 +29,4 @@ regex = "1"
 libc = "0.2"
 
 [dev-dependencies]
+indra-engine.workspace = true

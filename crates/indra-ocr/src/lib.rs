@@ -11,6 +11,8 @@ pub mod layout;
 pub mod line_mask;
 pub mod math;
 pub mod models;
+#[cfg(feature = "native")]
+pub mod native_backend;
 pub mod order_post;
 #[cfg(feature = "pdf")]
 pub mod pdfium;

@@ -323,6 +323,15 @@ impl Ocr {
         Ok(Ocr::new(Box::new(backend), meta, opts, reader))
     }
 
+    /// The pipeline on the native engine with the models in ``dir``.
+    #[cfg(feature = "native")]
+    pub fn with_native(dir: &std::path::Path, threads: usize, opts: OcrOptions, math: bool) -> Result<Self> {
+        let meta = Meta::load(dir)?;
+        let backend = crate::native_backend::NativeBackend::new(dir, threads, math)?;
+        let reader = if math { Some(MathReader::load(dir)?) } else { None };
+        Ok(Ocr::new(Box::new(backend), meta, opts, reader))
+    }
+
     fn detect_at(&mut self, gray: &Gray, long_side: usize) -> Result<(Vec<DetBox>, f64)> {
         let (x, s) = page_to_input(gray, long_side);
         let out = self.backend.det(&x)?;

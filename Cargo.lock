@@ -790,6 +790,7 @@ version = "0.1.0"
 dependencies = [
  "hf-hub",
  "image",
+ "indra-engine",
  "libc",
  "libloading 0.8.9",
  "ort",
