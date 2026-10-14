@@ -1,0 +1,74 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            isa: ""
+          - os: ubuntu-24.04
+            isa: avx2
+          - os: ubuntu-24.04
+            isa: scalar
+          - os: ubuntu-24.04-arm
+            isa: ""
+          - os: macos-14
+            isa: ""
+    runs-on: ${{ matrix.os }}
+    env:
+      INDRA_FORCE_ISA: ${{ matrix.isa }}
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        if: matrix.isa == '' && runner.os == 'Linux'
+        run: cargo fmt --all --check
+      - name: clippy
+        if: matrix.isa == '' && runner.os == 'Linux'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      # unit tests: kernels (on the ISA the matrix forces), pipeline logic,
+      # Python/NumPy semantics; the golden tests skip without fixtures
+      - name: test
+        run: cargo test --release --workspace
+      - name: build without ONNX Runtime
+        run: cargo build --release -p indra-ocr --no-default-features --features native,pdf
+
+  # The models against ONNX Runtime and the pipeline against the Python
+  # package, on fixtures generated in the job.
+  parity:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v5
+      - name: Python package and fixtures
+        run: |
+          git clone --depth 1 https://github.com/datalab-to/indra.git ../indra-py
+          uv venv && uv pip install numpy opencv-python-headless onnxruntime pypdfium2 huggingface_hub pillow
+          echo "INDRA_PY=$PWD/../indra-py" >> $GITHUB_ENV
+          echo "ORT_DYLIB_PATH=$(ls $PWD/.venv/lib/python*/site-packages/onnxruntime/capi/libonnxruntime.so.*)" >> $GITHUB_ENV
+          echo "PDFIUM_LIB=$(ls $PWD/.venv/lib/python*/site-packages/pypdfium2_raw/libpdfium.so)" >> $GITHUB_ENV
+          mkdir -p tests/fixtures/images && cp ../indra-py/assets/examples/*.png tests/fixtures/images/
+          .venv/bin/python tools/gen_cv_golden.py tests/fixtures/golden/cv
+          .venv/bin/python tools/gen_imread_golden.py tests/fixtures/golden/imread
+          INDRA_PY=$PWD/../indra-py .venv/bin/python tools/dump_golden.py tests/fixtures/golden/pages tests/fixtures/images/*.png
+      - name: parity tests
+        run: cargo test --release --workspace
+      - name: CLI against the Python package
+        run: |
+          cargo build --release -p indra-ocr-cli
+          for e in native ort; do
+            .venv/bin/python tools/compare.py --rust-args="--engine $e" tests/fixtures/images/*.png
+            .venv/bin/python tools/compare.py --args="--mode=ocr" --rust-args="--engine $e" tests/fixtures/images/*.png
+          done
