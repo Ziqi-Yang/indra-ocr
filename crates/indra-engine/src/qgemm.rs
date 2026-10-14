@@ -18,6 +18,8 @@ const MR: usize = 12;
 
 /// A weight matrix B [K, N] packed as int8 for the VNNI kernel.
 #[derive(Clone, Debug)]
+// off x86-64 there is no kernel to read the packed data (none is ever built)
+#[cfg_attr(not(target_arch = "x86_64"), allow(dead_code))]
 pub struct QPackedB {
     pub k: usize,
     pub n: usize,
@@ -81,6 +83,13 @@ pub fn qgemm(a: &[f32], lda: usize, m: usize, b: &QPackedB, c: &mut [f32], ldc: 
     let mut qa = vec![128u8; m.div_ceil(MR) * MR * b.k4];
     let mut sa = vec![0f32; m.div_ceil(MR) * MR];
     quantize_rows(a, lda, m, b.k, b.k4, &mut qa, &mut sa);
+    tiles(b, &qa, &sa, m, c, ldc, act, out);
+}
+
+/// The panels and row tiles of ``qgemm`` (the kernel is x86-64 only).
+#[cfg(target_arch = "x86_64")]
+#[allow(clippy::too_many_arguments)]
+fn tiles(b: &QPackedB, qa: &[u8], sa: &[f32], m: usize, c: &mut [f32], ldc: usize, act: Act, out: Out) {
     let mut tmp = vec![0f32; MR * NR];
     for p in 0..b.panels {
         let cols = NR.min(b.n - p * NR);
@@ -89,18 +98,12 @@ pub fn qgemm(a: &[f32], lda: usize, m: usize, b: &QPackedB, c: &mut [f32], ldc: 
         for r0 in (0..m).step_by(MR) {
             let rows = MR.min(m - r0);
             if rows == MR && cols == NR {
-                #[cfg(target_arch = "x86_64")]
                 // SAFETY: QPackedB exists only where available() holds; the tile is inside C.
-                unsafe {
-                    tile_vnni(b.k4, &qa[r0 * b.k4..], bp, &sa[r0..], &ep, c.as_mut_ptr().add(r0 * ldc + p * NR), ldc, out)
-                };
+                unsafe { tile_vnni(b.k4, &qa[r0 * b.k4..], bp, &sa[r0..], &ep, c.as_mut_ptr().add(r0 * ldc + p * NR), ldc, out) };
                 continue;
             }
-            #[cfg(target_arch = "x86_64")]
             // SAFETY: as above, into a full-size scratch tile
-            unsafe {
-                tile_vnni(b.k4, &qa[r0 * b.k4..], bp, &sa[r0..], &ep, tmp.as_mut_ptr(), NR, Out::Store)
-            };
+            unsafe { tile_vnni(b.k4, &qa[r0 * b.k4..], bp, &sa[r0..], &ep, tmp.as_mut_ptr(), NR, Out::Store) };
             for r in 0..rows {
                 let dst = &mut c[(r0 + r) * ldc + p * NR..(r0 + r) * ldc + p * NR + cols];
                 for (d, &v) in dst.iter_mut().zip(&tmp[r * NR..r * NR + cols]) {
@@ -111,7 +114,16 @@ pub fn qgemm(a: &[f32], lda: usize, m: usize, b: &QPackedB, c: &mut [f32], ldc: 
     }
 }
 
+/// Off x86-64 there is no int8 kernel, and no ``QPackedB`` to call it with
+/// (``QPackedB::from_nk`` returns None where ``available()`` is false).
+#[cfg(not(target_arch = "x86_64"))]
+#[allow(clippy::too_many_arguments)]
+fn tiles(_b: &QPackedB, _qa: &[u8], _sa: &[f32], _m: usize, _c: &mut [f32], _ldc: usize, _act: Act, _out: Out) {
+    unreachable!("int8 products need AVX-512 VNNI")
+}
+
 /// The per-column epilogue of one panel.
+#[cfg(target_arch = "x86_64")]
 struct Epi<'a> {
     scale: &'a [f32],
     shift: &'a [i32],

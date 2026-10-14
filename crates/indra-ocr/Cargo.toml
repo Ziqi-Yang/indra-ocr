@@ -33,3 +33,28 @@ libc = "0.2"
 
 [dev-dependencies]
 indra-engine.workspace = true
+
+# examples that compare with ONNX Runtime or need the native engine / pdfium
+[[example]]
+name = "bench_det"
+required-features = ["ort", "native"]
+
+[[example]]
+name = "bench_rec"
+required-features = ["ort", "native"]
+
+[[example]]
+name = "bench_order"
+required-features = ["ort", "native"]
+
+[[example]]
+name = "debug_line"
+required-features = ["ort", "native", "pdf"]
+
+[[example]]
+name = "bench_stages"
+required-features = ["native"]
+
+[[example]]
+name = "eval_int8"
+required-features = ["native"]

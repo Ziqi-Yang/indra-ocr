@@ -25,7 +25,7 @@ jobs:
       INDRA_FORCE_ISA: ${{ matrix.isa }}
       CARGO_TERM_COLOR: always
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -48,10 +48,12 @@ jobs:
   parity:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: false
       - name: Python package and fixtures
         run: |
           git clone --depth 1 https://github.com/datalab-to/indra.git ../indra-py

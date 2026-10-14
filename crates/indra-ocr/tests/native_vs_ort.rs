@@ -141,6 +141,10 @@ fn math_matches_ort() {
 
 #[test]
 fn classifiers_match_on_narrow_lines() {
+    // like the tests above: only where the parity fixtures (and ONNX Runtime) are set up
+    if golden("pages").is_none() {
+        return;
+    }
     let dir = indra_ocr::models::model_dir(None, None, false).expect("models");
     let mut ort = OrtBackend::new(&dir, 1, false).unwrap();
     let mut native = NativeBackend::new(&dir, 1, false).unwrap();
