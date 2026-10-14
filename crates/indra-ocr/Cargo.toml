@@ -19,12 +19,9 @@ thiserror.workspace = true
 rayon.workspace = true
 ort = { version = "=2.0.0-rc.14", default-features = false, features = ["load-dynamic", "std", "ndarray"], optional = true }
 pdfium-render = { version = "0.9.4", default-features = false, features = ["pdfium_latest", "thread_safe"], optional = true }
-hf-hub = { version = "1", default-features = false, features = ["blocking", "rustls-tls"], optional = true }
+hf-hub = { version = "0.4", default-features = false, features = ["ureq", "rustls-tls"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "tiff", "bmp", "webp", "gif", "pnm"] }
 tiff = "0.11"
-unicode-normalization = "0.1"
-unicode-general-category = "1.1"
-unicode-bidi = "0.3"
 regex = "1"
 libc = "0.2"
 
