@@ -80,9 +80,25 @@ enum Unary {
     Softplus,
 }
 
+/// An inverted residual block run in row tiles: expand 1x1 (+act),
+/// depthwise k x k stride 1 (+act), project 1x1, plus a residual.
+#[derive(Clone, Debug)]
+struct FusedIr {
+    expand: PackedB,
+    act_e: Act,
+    dw_w: Vec<f32>,
+    dw_b: Vec<f32>,
+    k: usize,
+    pad: usize,
+    act_d: Act,
+    project: PackedB,
+    act_p: Act,
+}
+
 #[derive(Clone, Debug)]
 enum Step {
     Conv { x: usize, out: usize, kind: ConvKind, act: Act, residual: Option<usize> },
+    Fused { x: usize, out: usize, block: Box<FusedIr>, residual: Option<usize> },
     Unary { x: usize, out: usize, op: Unary },
     Add { a: usize, b: usize, out: usize },
     MulScalar { x: usize, s: f32, out: usize },
@@ -327,6 +343,7 @@ impl Net {
             .map(|o| slot.get(o.as_str()).copied().ok_or_else(|| EngineError::Model(format!("output {o} is never computed"))))
             .collect::<Result<Vec<_>>>()?;
         let slots = next;
+        let steps = fuse_blocks(steps, &outputs, slots);
         let mut last_use = vec![0usize; slots];
         for (k, s) in steps.iter().enumerate() {
             for x in step_inputs(s) {
@@ -393,6 +410,13 @@ impl Net {
 
     fn exec(&self, s: &Step, v: &mut [Val], k: usize, par: &Par) -> Result<Val> {
         Ok(match s {
+            Step::Fused { x, block, residual, .. } => {
+                let res = match residual {
+                    Some(r) => Some(self.feat(v, *r)?),
+                    None => None,
+                };
+                Val::Feat(fused_ir(self.feat(v, *x)?, block, res, par))
+            }
             Step::Conv { x, kind, act, residual, .. } => {
                 let res = match residual {
                     Some(r) => Some(self.take(v, *r, k)?),
@@ -514,6 +538,7 @@ pub enum NetOut {
 
 fn step_inputs(s: &Step) -> Vec<usize> {
     match s {
+        Step::Fused { x, residual, .. } => std::iter::once(*x).chain(*residual).collect(),
         Step::Conv { x, residual, .. } => std::iter::once(*x).chain(*residual).collect(),
         Step::Add { a, b, .. } => vec![*a, *b],
         Step::Resize { x, sizes, .. } => vec![*x, *sizes],
@@ -536,6 +561,7 @@ fn step_inputs(s: &Step) -> Vec<usize> {
 
 fn step_output(s: &Step) -> usize {
     match s {
+        Step::Fused { out, .. } => *out,
         Step::Conv { out, .. }
         | Step::Unary { out, .. }
         | Step::Add { out, .. }
@@ -559,6 +585,7 @@ fn step_output(s: &Step) -> usize {
 
 fn step_name(s: &Step) -> &'static str {
     match s {
+        Step::Fused { .. } => "cnn.fused_block",
         Step::Conv { kind: ConvKind::Pointwise(_), .. } => "cnn.conv1x1",
         Step::Conv { kind: ConvKind::Depthwise { .. }, .. } => "cnn.dwconv",
         Step::Conv { kind: ConvKind::General { .. }, .. } => "cnn.conv",
@@ -572,6 +599,91 @@ fn step_name(s: &Step) -> &'static str {
         Step::MeanHW { .. } | Step::Gemm { .. } | Step::Softmax { .. } => "cnn.head",
         _ => "cnn.other",
     }
+}
+
+/// Replace expand -> depthwise (stride 1) -> project chains whose
+/// intermediates have no other reader by one row-tiled step.
+fn fuse_blocks(steps: Vec<Step>, outputs: &[usize], slots: usize) -> Vec<Step> {
+    if std::env::var_os("INDRA_ENGINE_NO_FUSION").is_some() {
+        return steps;
+    }
+    let mut readers = vec![0usize; slots];
+    for s in &steps {
+        for x in step_inputs(s) {
+            readers[x] += 1;
+        }
+    }
+    for &o in outputs {
+        readers[o] += 1;
+    }
+    let mut out: Vec<Option<Step>> = steps.into_iter().map(Some).collect();
+    for i in 0..out.len() {
+        let Some(Step::Conv { x, out: e, kind: ConvKind::Pointwise(expand), act: act_e, residual: None }) = out[i].clone() else {
+            continue;
+        };
+        if readers[e] != 1 {
+            continue;
+        }
+        let Some(j) = (i + 1..out.len()).find(|&j| out[j].as_ref().is_some_and(|s| step_inputs(s).contains(&e))) else { continue };
+        let Some(Step::Conv {
+            x: xe,
+            out: d,
+            kind: ConvKind::Depthwise { w: dw_w, b: dw_b, k, stride: 1, pad },
+            act: act_d,
+            residual: None,
+        }) = out[j].clone()
+        else {
+            continue;
+        };
+        if xe != e || readers[d] != 1 || 2 * pad + 1 != k {
+            continue;
+        }
+        let Some(l) = (j + 1..out.len()).find(|&l| out[l].as_ref().is_some_and(|s| step_inputs(s).contains(&d))) else { continue };
+        let Some(Step::Conv { x: xd, out: y, kind: ConvKind::Pointwise(project), act: act_p, residual }) = out[l].clone() else { continue };
+        if xd != d {
+            continue;
+        }
+        let block = Box::new(FusedIr { expand, act_e, dw_w, dw_b, k, pad, act_d, project, act_p });
+        out[i] = None;
+        out[j] = None;
+        out[l] = Some(Step::Fused { x, out: y, block, residual });
+    }
+    out.into_iter().flatten().collect()
+}
+
+/// An inverted residual block in row tiles: each tile computes the expanded
+/// rows it needs (its rows and a halo), the depthwise conv and the projection
+/// while they are in cache; only the input and output touch memory.
+fn fused_ir(x: &Feat, b: &FusedIr, residual: Option<&Feat>, par: &Par) -> Feat {
+    let (h, w) = (x.h, x.w);
+    let (ce, co) = (b.expand.n, b.project.n);
+    let mut y = Feat::new(h, w, co);
+    // tile height: the expanded rows (tile + halo) about 512 KiB
+    let row_bytes = w * ce * 4;
+    let rows = ((512 * 1024) / row_bytes.max(1)).saturating_sub(2 * b.pad).clamp(1, h.max(1));
+    // at least a few tiles per thread
+    let rows = rows.min(h.div_ceil(par.threads() * 2)).max(1);
+    par.chunks(&mut y.data, rows * w * co, |t, yt| {
+        let r0 = t * rows;
+        let n = yt.len() / (w * co);
+        let (e0, e1) = (r0.saturating_sub(b.pad), (r0 + n + b.pad).min(h));
+        // expanded rows [e0, e1)
+        let mut e = vec![0f32; (e1 - e0) * w * ce];
+        gemm(&x.data[e0 * w * x.c..e1 * w * x.c], x.c, (e1 - e0) * w, &b.expand, &mut e, ce, b.act_e, Out::Store);
+        // depthwise over the tile's rows (row r0 is row r0 - e0 of e)
+        let mut d = vec![0f32; n * w * ce];
+        dwconv2d(&e, e1 - e0, w, ce, &b.dw_w, &b.dw_b, b.k, 1, b.pad, &mut d, r0 - e0, n, w, false);
+        unary_act(&mut d, b.act_d);
+        // project, plus the residual rows
+        match residual {
+            Some(r) => {
+                yt.copy_from_slice(&r.data[r0 * w * co..(r0 + n) * w * co]);
+                gemm(&d, ce, n * w, &b.project, yt, co, b.act_p, Out::Add);
+            }
+            None => gemm(&d, ce, n * w, &b.project, yt, co, b.act_p, Out::Store),
+        }
+    });
+    y
 }
 
 fn is_feature_unsqueeze(g: &Graph, i: usize) -> bool {
