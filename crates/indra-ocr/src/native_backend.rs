@@ -34,7 +34,8 @@ pub struct NativeBackend {
 impl NativeBackend {
     pub fn new(dir: &Path, threads: usize, math: bool) -> Result<Self> {
         let par = std::sync::Arc::new(Par::new(threads));
-        let rec_path = if dir.join("rec.int8.onnx").exists() { dir.join("rec.int8.onnx") } else { dir.join("rec.onnx") };
+        // the float recognizer (a quantized rec.int8.onnx is for ONNX Runtime)
+        let rec_path = dir.join("rec.onnx");
         let rec = Recognizer::load(&rec_path).map_err(err)?;
         let (rec_cjk, script) = if dir.join("script.onnx").exists() && dir.join("rec_cjk.onnx").exists() {
             (
