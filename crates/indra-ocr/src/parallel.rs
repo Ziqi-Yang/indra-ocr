@@ -79,6 +79,34 @@ pub fn usable_cores() -> usize {
     std::thread::available_parallelism().map_or(1, |n| n.get())
 }
 
+/// Physical cores among the CPUs this process may run on: SMT siblings count
+/// once (Linux; elsewhere the usable cores).
+pub fn physical_cores() -> usize {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        if libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) == 0 {
+            let mut cores = std::collections::HashSet::new();
+            for cpu in 0..libc::CPU_SETSIZE as usize {
+                if !libc::CPU_ISSET(cpu, &set) {
+                    continue;
+                }
+                let p = format!("/sys/devices/system/cpu/cpu{cpu}/topology/thread_siblings_list");
+                match std::fs::read_to_string(p) {
+                    Ok(s) => {
+                        cores.insert(s.trim().to_string());
+                    }
+                    Err(_) => return usable_cores(),
+                }
+            }
+            if !cores.is_empty() {
+                return cores.len();
+            }
+        }
+    }
+    usable_cores()
+}
+
 fn max_workers_for_memory() -> usize {
     #[cfg(unix)]
     unsafe {
@@ -141,7 +169,10 @@ pub fn convert_many(
     // Resolve (and on a first run download) the models once, not in every worker.
     let mut opts = opts.clone();
     opts.model_dir = Some(crate::models::model_dir(opts.model_dir.as_deref(), None, opts.math)?);
-    let cores = if cores == 0 { usable_cores() } else { cores }.max(1);
+    // The native kernels keep a core's vector units busy, so a second worker on
+    // its SMT sibling only adds contention; ONNX Runtime keeps Python's choice.
+    let auto = if opts.engine == Engine::Native { physical_cores() } else { usable_cores() };
+    let cores = if cores == 0 { auto } else { cores }.max(1);
     let plan = plan(paths, max_pages, password);
     let n_pages: usize = plan.iter().map(|u| u.as_ref().map_or(0, |v| v.len())).sum();
     let workers = (cores / THREADS_PER_WORKER).min(n_pages).min(max_workers_for_memory());

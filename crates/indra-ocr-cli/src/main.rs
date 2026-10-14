@@ -50,7 +50,8 @@ struct Args {
     no_image_ocr: bool,
     #[arg(long)]
     model_dir: Option<PathBuf>,
-    /// cores to use (default: all this process may run on)
+    /// cores to use (default: all this process may run on; with the native
+    /// engine, one per physical core)
     #[arg(long, alias = "threads", default_value_t = 0)]
     cores: usize,
     #[arg(long, default_value_t = 200.0)]

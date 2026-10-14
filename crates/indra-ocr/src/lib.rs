@@ -36,5 +36,5 @@ pub(crate) fn ort_backend_batch() -> usize {
 }
 pub use document::{ConvertOptions, Converter, Mode};
 pub use io::InputError;
-pub use parallel::{Engine, LoadOptions, convert_many, load, usable_cores};
+pub use parallel::{Engine, LoadOptions, convert_many, load, physical_cores, usable_cores};
 pub use pipeline::{Line, Ocr, OcrOptions, Page};

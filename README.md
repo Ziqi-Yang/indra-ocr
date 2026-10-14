@@ -115,7 +115,9 @@ Python package: `tools/gen_cv_golden.py`, `tools/gen_imread_golden.py`, `tools/d
 - **ISA dispatch** at run time (`is_x86_feature_detected!` / NEON), so one binary is fast on any x86-64
   or AArch64 CPU.
 - **Threads**: page-parallel workers run single-threaded models; a single page (serial mode) splits its
-  recognizer chunks, conv rows and line work over the cores.
+  recognizer chunks, conv rows and line work over the cores. With the native engine the default worker
+  count is one per physical core (SMT siblings only add contention to kernels that already keep the
+  vector units busy); `--cores` overrides it.
 
 ### pdfium and threads
 
