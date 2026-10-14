@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::backend::{Backend, BackendError, RecModel};
 use crate::crop::{PAD_X, crop_line};
 use crate::det_post::{DetBox, decode, page_to_input};
-use crate::imgproc::{Border, Gray, ImageF, Interp, resize_u8, rot90_cw, rotation_matrix, warp_affine_f32_row_sums, warp_affine_u8};
+use crate::imgproc::{Border, Gray, ImageF, Interp, resize_u8, rot90_cw, rotation_matrix, warp_affine_u8, warp_ink_row_sums};
 use crate::layout::{Block, Cells, page_blocks, page_markdown};
 use crate::math::MathReader;
 use crate::models::{Meta, ModelError};
@@ -201,6 +201,11 @@ impl Default for OcrOptions {
 /// Degrees (counter-clockwise) that straighten the text rows of a page: the
 /// angle whose horizontal ink profile changes most sharply row to row.
 pub fn estimate_skew(gray: &Gray) -> f64 {
+    estimate_skew_on(gray, None)
+}
+
+/// ``estimate_skew``, the angles evaluated on ``pool`` when given.
+pub fn estimate_skew_on(gray: &Gray, pool: Option<&rayon::ThreadPool>) -> f64 {
     let side = 800.0;
     let s = side / gray.h.max(gray.w) as f64;
     let sw = round_int(gray.w as f64 * s).max(1) as usize;
@@ -213,12 +218,12 @@ pub fn estimate_skew(gray: &Gray) -> f64 {
     }
     let c = (sw as f64 / 2.0, sh as f64 / 2.0);
     let sharpness = |a: f64| -> f32 {
-        let p = warp_affine_f32_row_sums(&ink, &rotation_matrix(c, a, 1.0), sw, sh, Border::Constant, 0.0);
+        let p = warp_ink_row_sums(&small, &rotation_matrix(c, a, 1.0), sw, sh);
         let d: Vec<f32> = p.windows(2).map(|w| (w[1] - w[0]) * (w[1] - w[0])).collect();
         pairwise_sum_f32(&d)
     };
-    let best = py_max(&arange(-DESKEW_MAX, DESKEW_MAX + 1e-6, 0.5), &sharpness);
-    py_max(&arange(best - 0.5, best + 0.5 + 1e-6, 0.1), &sharpness)
+    let best = py_max(&arange(-DESKEW_MAX, DESKEW_MAX + 1e-6, 0.5), &sharpness, pool);
+    py_max(&arange(best - 0.5, best + 0.5 + 1e-6, 0.1), &sharpness, pool)
 }
 
 /// np.arange(start, stop, step): start + i * (second - first).
@@ -229,17 +234,19 @@ fn arange(start: f64, stop: f64, step: f64) -> Vec<f64> {
 }
 
 /// Python max(values, key=f): the first value with the largest key.
-fn py_max(values: &[f64], f: &impl Fn(f64) -> f32) -> f64 {
-    let mut best = values[0];
-    let mut bk = f(best);
-    for &v in &values[1..] {
-        let k = f(v);
-        if k > bk {
-            best = v;
-            bk = k;
+fn py_max(values: &[f64], f: &(impl Fn(f64) -> f32 + Sync), pool: Option<&rayon::ThreadPool>) -> f64 {
+    use rayon::prelude::*;
+    let keys: Vec<f32> = match pool {
+        Some(p) => p.install(|| values.par_iter().map(|&v| f(v)).collect()),
+        None => values.iter().map(|&v| f(v)).collect(),
+    };
+    let mut best = 0;
+    for i in 1..keys.len() {
+        if keys[i] > keys[best] {
+            best = i;
         }
     }
-    best
+    values[best]
 }
 
 /// The page rotated by ``degrees`` counter-clockwise about its centre (same size).
@@ -292,6 +299,8 @@ pub struct Layout {
 
 pub struct Ocr {
     pub backend: Box<dyn Backend>,
+    /// for the CPU-side steps of one page (deskew search, line crops)
+    pub pool: Option<rayon::ThreadPool>,
     pub vocab: Vocab,
     pub vocab_cjk: Option<Vocab>,
     pub long_side: usize,
@@ -304,6 +313,7 @@ impl Ocr {
     pub fn new(backend: Box<dyn Backend>, meta: Meta, opts: OcrOptions, math: Option<MathReader>) -> Self {
         Ocr {
             backend,
+            pool: None,
             vocab: meta.vocab,
             vocab_cjk: meta.vocab_cjk,
             long_side: meta.det_long_side,
@@ -320,7 +330,13 @@ impl Ocr {
         let meta = Meta::load(dir)?;
         let backend = crate::ort_backend::OrtBackend::new(dir, threads, math)?;
         let reader = if math { Some(MathReader::load(dir)?) } else { None };
-        Ok(Ocr::new(Box::new(backend), meta, opts, reader))
+        Ok(Ocr::new(Box::new(backend), meta, opts, reader).with_threads(threads))
+    }
+
+    /// Run the CPU-side steps of a page on ``threads`` threads.
+    pub fn with_threads(mut self, threads: usize) -> Self {
+        self.pool = (threads > 1).then(|| rayon::ThreadPoolBuilder::new().num_threads(threads).build().ok()).flatten();
+        self
     }
 
     /// The pipeline on the native engine with the models in ``dir``.
@@ -329,7 +345,7 @@ impl Ocr {
         let meta = Meta::load(dir)?;
         let backend = crate::native_backend::NativeBackend::new(dir, threads, math)?;
         let reader = if math { Some(MathReader::load(dir)?) } else { None };
-        Ok(Ocr::new(Box::new(backend), meta, opts, reader))
+        Ok(Ocr::new(Box::new(backend), meta, opts, reader).with_threads(threads))
     }
 
     fn detect_at(&mut self, gray: &Gray, long_side: usize) -> Result<(Vec<DetBox>, f64)> {
@@ -363,7 +379,11 @@ impl Ocr {
     /// Recognizer inputs of the line boxes (after CenterMask when the models have it).
     pub fn crop_lines(&mut self, gray: &Gray, boxes: &[[f32; 4]], height: usize) -> Result<Vec<ImageF>> {
         if !self.backend.has_mask() {
-            return Ok(boxes.iter().map(|b| crop_line(gray, *b, height)).collect());
+            use rayon::prelude::*;
+            return Ok(match &self.pool {
+                Some(p) => p.install(|| boxes.par_iter().map(|b| crop_line(gray, *b, height)).collect()),
+                None => boxes.iter().map(|b| crop_line(gray, *b, height)).collect(),
+            });
         }
         let wins = crate::line_mask::masked_windows(gray, boxes, self.backend.as_mut())?;
         Ok(wins.iter().map(|(w, b)| crop_line(w, *b, height)).collect())
@@ -590,7 +610,7 @@ impl Ocr {
     pub fn upright(&mut self, gray: &Gray, turn: bool) -> Result<(Gray, u32, f64)> {
         let k = if turn { self.orientation(gray)? } else { 0 };
         let g = if k > 0 { rot90_cw(gray, k) } else { gray.clone() };
-        let a = estimate_skew(&g);
+        let a = estimate_skew_on(&g, self.pool.as_ref());
         if a.abs() >= DESKEW_MIN { Ok((rotate_page(&g, a), k, a)) } else { Ok((g, k, 0.0)) }
     }
 
