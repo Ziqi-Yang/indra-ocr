@@ -15,7 +15,7 @@ use crate::onnx::{Graph, Node};
 use crate::simd::{argmax_row, col_sums, dwconv1d, scale_cols, sigmoid, sum_exp};
 use crate::{EngineError, Result};
 
-struct Block {
+pub(crate) struct Block {
     dw_w: Vec<f32>, // [K, C]
     dw_b: Vec<f32>,
     expand: PackedB,
@@ -102,46 +102,7 @@ impl Recognizer {
         }
         let stem = PackedB::from_nk(&w, c, k, Some(&b));
         // blocks
-        let n_blocks = (convs.len() - 2) / 5;
-        let mut blocks = Vec::with_capacity(n_blocks);
-        let mut e = 0;
-        for bi in 0..n_blocks {
-            let ns = &convs[1 + 5 * bi..6 + 5 * bi];
-            let (dw, dwb) = conv_wb(g, ns[0])?;
-            if dw.dims.len() != 3 || dw.dims[0] != c || dw.dims[1] != 1 || ns[0].int("group") != Some(c as i64) {
-                return Err(bad(format!("block {bi}: depthwise conv is {:?}", dw.dims)));
-            }
-            let kk = dw.dims[2];
-            if ns[0].ints("pads") != Some(&[(kk / 2) as i64, (kk / 2) as i64][..]) {
-                return Err(bad(format!("block {bi}: depthwise conv is not 'same' padded")));
-            }
-            // [C, 1, K] -> [K, C]
-            let mut dw_w = vec![0f32; kk * c];
-            for ch in 0..c {
-                for j in 0..kk {
-                    dw_w[j * c + ch] = dw.f32[ch * kk + j];
-                }
-            }
-            let (ew, eb) = conv_wb(g, ns[1])?;
-            let (s1w, s1b) = conv_wb(g, ns[2])?;
-            let (s2w, s2b) = conv_wb(g, ns[3])?;
-            let (pjw, pjb) = conv_wb(g, ns[4])?;
-            e = ew.dims[0];
-            let r = s1w.dims[0];
-            if ew.dims[1] != c || s1w.dims[1] != e || s2w.dims[..2] != [e, r] || pjw.dims[..2] != [c, e] {
-                return Err(bad(format!("block {bi}: unexpected 1x1 conv shapes")));
-            }
-            blocks.push(Block {
-                dw_w,
-                dw_b: dwb.f32.clone(),
-                expand: PackedB::from_nk(&ew.f32, e, c, Some(&eb.f32)),
-                se1_w: s1w.f32.clone(),
-                se1_b: s1b.f32.clone(),
-                se2_w: s2w.f32.clone(),
-                se2_b: s2b.f32.clone(),
-                project: PackedB::from_nk(&pjw.f32, c, e, Some(&pjb.f32)),
-            });
-        }
+        let (blocks, e) = load_blocks(g, &convs[1..convs.len() - 1], c)?;
         // the SE mean divides by max(length, Clip min): check that min is 1
         if let Some(clip) = g.ops("Clip").find(|n| n.inputs.len() > 1 && !n.inputs[1].is_empty()) {
             let t = g.arg(clip, 1)?;
@@ -243,29 +204,7 @@ impl Recognizer {
         prof.lap("rec.patches");
         gemm(&ws.patches, kp, total, &self.stem, &mut ws.x, c, Act::HardSwish, Out::Store);
         prof.lap("rec.stem");
-        let mut mean = vec![0f32; e];
-        for b in &self.blocks {
-            for &(s0, t) in &segs {
-                dwconv1d(&ws.x[s0 * c..(s0 + t) * c], t, c, &b.dw_w, &b.dw_b, &mut ws.d[s0 * c..(s0 + t) * c]);
-            }
-            prof.lap("rec.dwconv");
-            gemm(&ws.d, c, total, &b.expand, &mut ws.ex, e, Act::HardSwish, Out::Store);
-            prof.lap("rec.expand");
-            // squeeze-excite per line
-            for &(s0, t) in &segs {
-                let seg = &mut ws.ex[s0 * e..(s0 + t) * e];
-                col_sums(seg, e, &mut mean);
-                let inv = 1.0 / (t as f32).max(1.0);
-                for v in mean.iter_mut() {
-                    *v *= inv;
-                }
-                let s = squeeze_excite(&mean, &b.se1_w, &b.se1_b, &b.se2_w, &b.se2_b);
-                scale_cols(seg, &s);
-            }
-            prof.lap("rec.se");
-            gemm(&ws.ex, e, total, &b.project, &mut ws.x, c, Act::None, Out::Add);
-            prof.lap("rec.project");
-        }
+        run_blocks(&self.blocks, &segs, &mut ws.x, &mut ws.d, &mut ws.ex, c, e, &mut prof);
         // classifier, a few rows at a time, and CTC greedy decoding
         const ROWS: usize = 48;
         let v = self.classes;
@@ -291,6 +230,83 @@ impl Recognizer {
                 prof.lap("rec.decode");
             }
         }
+    }
+}
+
+/// Residual blocks from their Conv nodes (5 per block: depthwise, expand,
+/// squeeze, excite, project): (blocks, expanded width).
+pub(crate) fn load_blocks(g: &Graph, convs: &[&Node], c: usize) -> Result<(Vec<Block>, usize)> {
+    if convs.len() % 5 != 0 {
+        return Err(bad("block convolutions are not in fives"));
+    }
+    let mut blocks = Vec::with_capacity(convs.len() / 5);
+    let mut e = 0;
+    for (bi, ns) in convs.chunks_exact(5).enumerate() {
+        let (dw, dwb) = conv_wb(g, ns[0])?;
+        if dw.dims.len() != 3 || dw.dims[0] != c || dw.dims[1] != 1 || ns[0].int("group") != Some(c as i64) {
+            return Err(bad(format!("block {bi}: depthwise conv is {:?}", dw.dims)));
+        }
+        let kk = dw.dims[2];
+        if ns[0].ints("pads") != Some(&[(kk / 2) as i64, (kk / 2) as i64][..]) {
+            return Err(bad(format!("block {bi}: depthwise conv is not 'same' padded")));
+        }
+        // [C, 1, K] -> [K, C]
+        let mut dw_w = vec![0f32; kk * c];
+        for ch in 0..c {
+            for j in 0..kk {
+                dw_w[j * c + ch] = dw.f32[ch * kk + j];
+            }
+        }
+        let (ew, eb) = conv_wb(g, ns[1])?;
+        let (s1w, s1b) = conv_wb(g, ns[2])?;
+        let (s2w, s2b) = conv_wb(g, ns[3])?;
+        let (pjw, pjb) = conv_wb(g, ns[4])?;
+        e = ew.dims[0];
+        let r = s1w.dims[0];
+        if ew.dims[1] != c || s1w.dims[1] != e || s2w.dims[..2] != [e, r] || pjw.dims[..2] != [c, e] {
+            return Err(bad(format!("block {bi}: unexpected 1x1 conv shapes")));
+        }
+        blocks.push(Block {
+            dw_w,
+            dw_b: dwb.f32.clone(),
+            expand: PackedB::from_nk(&ew.f32, e, c, Some(&eb.f32)),
+            se1_w: s1w.f32.clone(),
+            se1_b: s1b.f32.clone(),
+            se2_w: s2w.f32.clone(),
+            se2_b: s2b.f32.clone(),
+            project: PackedB::from_nk(&pjw.f32, c, e, Some(&pjb.f32)),
+        });
+    }
+    Ok((blocks, e))
+}
+
+/// Run residual blocks on ``x`` [T, C] holding the lines ``segs`` ((start,
+/// length) in rows); ``d`` [T, C] and ``ex`` [T, E] are scratch.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_blocks(blocks: &[Block], segs: &[(usize, usize)], x: &mut [f32], d: &mut [f32], ex: &mut [f32], c: usize, e: usize, prof: &mut crate::profile::Timer) {
+    let total: usize = segs.iter().map(|s| s.1).sum();
+    let mut mean = vec![0f32; e];
+    for b in blocks {
+        for &(s0, t) in segs {
+            dwconv1d(&x[s0 * c..(s0 + t) * c], t, c, &b.dw_w, &b.dw_b, &mut d[s0 * c..(s0 + t) * c]);
+        }
+        prof.lap("rec.dwconv");
+        gemm(d, c, total, &b.expand, ex, e, Act::HardSwish, Out::Store);
+        prof.lap("rec.expand");
+        // squeeze-excite per line
+        for &(s0, t) in segs {
+            let seg = &mut ex[s0 * e..(s0 + t) * e];
+            col_sums(seg, e, &mut mean);
+            let inv = 1.0 / (t as f32).max(1.0);
+            for v in mean.iter_mut() {
+                *v *= inv;
+            }
+            let s = squeeze_excite(&mean, &b.se1_w, &b.se1_b, &b.se2_w, &b.se2_b);
+            scale_cols(seg, &s);
+        }
+        prof.lap("rec.se");
+        gemm(ex, e, total, &b.project, x, c, Act::None, Out::Add);
+        prof.lap("rec.project");
     }
 }
 

@@ -27,6 +27,13 @@ mod unitab;
 pub mod vocab;
 
 pub use backend::Backend;
+
+/// Lines per recognizer / classifier batch (pipeline.py: ``batch=64``).
+pub const REC_BATCH: usize = 64;
+
+pub(crate) fn ort_backend_batch() -> usize {
+    REC_BATCH
+}
 pub use document::{ConvertOptions, Converter, Mode};
 pub use io::InputError;
 pub use parallel::{Engine, LoadOptions, convert_many, load, usable_cores};

@@ -5,10 +5,13 @@
 //! model-specific code on matrix kernels chosen for the CPU at run time
 //! (AVX-512, AVX2/FMA, NEON or portable Rust).
 
+pub mod classifier;
 pub mod cnn;
 pub mod cpu;
 pub mod gemm;
+pub mod math;
 pub mod onnx;
+pub mod order;
 pub mod profile;
 pub mod rec;
 pub mod simd;

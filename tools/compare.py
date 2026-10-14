@@ -30,13 +30,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rust", default="target/release/indra-ocr")
     ap.add_argument("--args", default="", help="extra CLI arguments for both, e.g. '--mode ocr --math'")
+    ap.add_argument("--rust-args", default="", help="extra arguments for the Rust CLI only, e.g. '--engine native'")
     ap.add_argument("--show", type=int, default=3, help="differences to print per field")
     ap.add_argument("inputs", nargs="+")
     a = ap.parse_args()
     extra = a.args.split()
     py_cmd = [sys.executable, "-c", f"import sys; sys.path.insert(0, {PY!r}); from indra_ocr.cli import main; sys.exit(main())"]
     py, py_raw, py_err, py_rc, py_t = run(py_cmd + ["--format", "json", *extra, *a.inputs])
-    rs, rs_raw, rs_err, rs_rc, rs_t = run([a.rust, "--format", "json", *extra, *a.inputs])
+    rs, rs_raw, rs_err, rs_rc, rs_t = run([a.rust, "--format", "json", *extra, *a.rust_args.split(), *a.inputs])
     print(f"python: {len(py)} pages in {py_t:.2f}s (exit {py_rc}); rust: {len(rs)} pages in {rs_t:.2f}s (exit {rs_rc})")
     if py_rc != rs_rc:
         print("exit codes differ\n--- python stderr\n" + py_err[-2000:] + "\n--- rust stderr\n" + rs_err[-2000:])
@@ -62,6 +63,9 @@ def main():
                 diffs.append(f"lines {nd[:10]}")
         if diffs:
             bad += 1
+            if a.show and f"lines" in " ".join(diffs) and len(pl) == len(rl):
+                for i in [i for i, (x, y) in enumerate(zip(pl, rl)) if x != y][: a.show]:
+                    print(f"   line {i}: {pl[i]} vs {rl[i]}")
             print(f"{k}: {', '.join(diffs)}")
             if "note" in diffs:
                 print(f"   note: {p['note']!r} vs {r['note']!r}")

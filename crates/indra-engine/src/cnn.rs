@@ -60,7 +60,7 @@ enum Val {
 }
 
 #[derive(Clone, Debug)]
-enum ConvKind {
+pub(crate) enum ConvKind {
     /// 1x1, stride 1: one product per pixel
     Pointwise(PackedB),
     /// one filter per channel: w [KH, KW, C]
@@ -156,57 +156,7 @@ impl Net {
             let inp = |k: usize, slot: &mut HashMap<String, usize>, id: &mut dyn FnMut(&str, &mut HashMap<String, usize>) -> usize| id(&n.inputs[k], slot);
             match n.op.as_str() {
                 "Conv" => {
-                    let (w, b) = (g.arg(n, 1)?, n.inputs.get(2).map(|_| g.arg(n, 2)).transpose()?);
-                    let (co, ci_g, kh, kw) = match w.dims[..] {
-                        [a, b, c, d] => (a, b, c, d),
-                        _ => return Err(bad(n, "2-D convolutions only")),
-                    };
-                    if kh != kw {
-                        return Err(bad(n, "square kernels only"));
-                    }
-                    let group = n.int("group").unwrap_or(1) as usize;
-                    let stride = n.ints("strides").map_or(1, |s| s[0] as usize);
-                    let pad = n.ints("pads").map_or(0, |p| p[0] as usize);
-                    if n.ints("strides").is_some_and(|s| s.iter().any(|&v| v as usize != stride))
-                        || n.ints("pads").is_some_and(|p| p.iter().any(|&v| v as usize != pad))
-                        || n.ints("dilations").is_some_and(|d| d.iter().any(|&v| v != 1))
-                    {
-                        return Err(bad(n, "uneven strides, pads or dilations"));
-                    }
-                    let bias = b.map(|t| t.f32.clone()).unwrap_or_else(|| vec![0.0; co]);
-                    let kind = if group == 1 && kh == 1 && stride == 1 && pad == 0 {
-                        ConvKind::Pointwise(PackedB::from_nk(&w.f32, co, ci_g, Some(&bias)))
-                    } else if group == co && ci_g == 1 {
-                        let mut dw = vec![0f32; kh * kw * co];
-                        for ch in 0..co {
-                            for j in 0..kh * kw {
-                                dw[j * co + ch] = w.f32[ch * kh * kw + j];
-                            }
-                        }
-                        ConvKind::Depthwise { w: dw, b: bias, k: kh, stride, pad }
-                    } else if group == 1 && ci_g == 1 {
-                        let mut sw = vec![0f32; kh * kw * co];
-                        for o in 0..co {
-                            for j in 0..kh * kw {
-                                sw[j * co + o] = w.f32[o * kh * kw + j];
-                            }
-                        }
-                        ConvKind::Single { w: sw, b: bias, k: kh, stride, pad }
-                    } else if group == 1 {
-                        // [Co, Ci, KH, KW] -> rows (kh, kw, ci)
-                        let kk = kh * kw * ci_g;
-                        let mut wt = vec![0f32; co * kk];
-                        for o in 0..co {
-                            for ci in 0..ci_g {
-                                for j in 0..kh * kw {
-                                    wt[o * kk + j * ci_g + ci] = w.f32[(o * ci_g + ci) * kh * kw + j];
-                                }
-                            }
-                        }
-                        ConvKind::General { b: PackedB::from_nk(&wt, co, kk, Some(&bias)), cin: ci_g, k: kh, stride, pad }
-                    } else {
-                        return Err(bad(n, "grouped convolutions other than depthwise"));
-                    };
+                    let kind = conv_kind(g, n)?;
                     // fuse a following activation, or a residual Add
                     let mut out_name = n.outputs[0].clone();
                     let mut act = Act::None;
@@ -641,8 +591,64 @@ fn space_to_depth_chain(g: &Graph, i: usize) -> Option<Vec<usize>> {
     Some(chain)
 }
 
+
+/// The convolution of a Conv node, prepared for its kind.
+pub(crate) fn conv_kind(g: &Graph, n: &Node) -> Result<ConvKind> {
+    let (w, b) = (g.arg(n, 1)?, n.inputs.get(2).map(|_| g.arg(n, 2)).transpose()?);
+    let (co, ci_g, kh, kw) = match w.dims[..] {
+        [a, b, c, d] => (a, b, c, d),
+        _ => return Err(bad(n, "2-D convolutions only")),
+    };
+    if kh != kw {
+        return Err(bad(n, "square kernels only"));
+    }
+    let group = n.int("group").unwrap_or(1) as usize;
+    let stride = n.ints("strides").map_or(1, |s| s[0] as usize);
+    let pad = n.ints("pads").map_or(0, |p| p[0] as usize);
+    if n.ints("strides").is_some_and(|s| s.iter().any(|&v| v as usize != stride))
+        || n.ints("pads").is_some_and(|p| p.iter().any(|&v| v as usize != pad))
+        || n.ints("dilations").is_some_and(|d| d.iter().any(|&v| v != 1))
+    {
+        return Err(bad(n, "uneven strides, pads or dilations"));
+    }
+    let bias = b.map(|t| t.f32.clone()).unwrap_or_else(|| vec![0.0; co]);
+    Ok(if group == 1 && kh == 1 && stride == 1 && pad == 0 {
+        ConvKind::Pointwise(PackedB::from_nk(&w.f32, co, ci_g, Some(&bias)))
+    } else if group == co && ci_g == 1 {
+        let mut dw = vec![0f32; kh * kw * co];
+        for ch in 0..co {
+            for j in 0..kh * kw {
+                dw[j * co + ch] = w.f32[ch * kh * kw + j];
+            }
+        }
+        ConvKind::Depthwise { w: dw, b: bias, k: kh, stride, pad }
+    } else if group == 1 && ci_g == 1 {
+        let mut sw = vec![0f32; kh * kw * co];
+        for o in 0..co {
+            for j in 0..kh * kw {
+                sw[j * co + o] = w.f32[o * kh * kw + j];
+            }
+        }
+        ConvKind::Single { w: sw, b: bias, k: kh, stride, pad }
+    } else if group == 1 {
+        // [Co, Ci, KH, KW] -> rows (kh, kw, ci)
+        let kk = kh * kw * ci_g;
+        let mut wt = vec![0f32; co * kk];
+        for o in 0..co {
+            for ci in 0..ci_g {
+                for j in 0..kh * kw {
+                    wt[o * kk + j * ci_g + ci] = w.f32[(o * ci_g + ci) * kh * kw + j];
+                }
+            }
+        }
+        ConvKind::General { b: PackedB::from_nk(&wt, co, kk, Some(&bias)), cin: ci_g, k: kh, stride, pad }
+    } else {
+        return Err(bad(n, "grouped convolutions other than depthwise"));
+    })
+}
+
 /// One convolution with its fused activation (and residual: out = residual + act(conv)).
-fn conv(x: &Feat, kind: &ConvKind, act: Act, residual: Option<Feat>) -> Feat {
+pub(crate) fn conv(x: &Feat, kind: &ConvKind, act: Act, residual: Option<Feat>) -> Feat {
     match kind {
         ConvKind::Pointwise(b) => {
             let (mut o, out) = match residual {
@@ -863,18 +869,34 @@ fn space_to_depth(x: &Feat, b: usize) -> Feat {
     o
 }
 
-/// 2 x 2 pool with stride 2 (floor): mean or max.
-pub fn pool2(x: &Feat, max: bool) -> Feat {
-    let (oh, ow) = (x.h / 2, x.w / 2);
+/// 2 x 2 pool with stride 2: mean or max. The output size follows ONNX
+/// Runtime: (n - 2) / 2 + 1 in C integer division, so a size of 1 pools to 1
+/// (the window is cut at the edge) rather than to 0.
+pub(crate) fn pool2(x: &Feat, max: bool) -> Feat {
+    let out = |n: usize| if n == 1 { 1 } else { n / 2 };
+    let (oh, ow) = (out(x.h), out(x.w));
     let mut o = Feat::new(oh, ow, x.c);
     let c = x.c;
     for y in 0..oh {
         for xx in 0..ow {
-            let p = |i: usize, j: usize| &x.data[((2 * y + i) * x.w + 2 * xx + j) * c..((2 * y + i) * x.w + 2 * xx + j + 1) * c];
-            let (a, b, cc, d) = (p(0, 0), p(0, 1), p(1, 0), p(1, 1));
             let dst = &mut o.data[(y * ow + xx) * c..(y * ow + xx + 1) * c];
-            for ch in 0..c {
-                dst[ch] = if max { a[ch].max(b[ch]).max(cc[ch]).max(d[ch]) } else { (a[ch] + b[ch] + cc[ch] + d[ch]) * 0.25 };
+            let mut n = 0;
+            for i in 0..2 {
+                for j in 0..2 {
+                    let (sy, sx) = (2 * y + i, 2 * xx + j);
+                    if sy >= x.h || sx >= x.w {
+                        continue;
+                    }
+                    let src = &x.data[(sy * x.w + sx) * c..(sy * x.w + sx + 1) * c];
+                    for ch in 0..c {
+                        dst[ch] = if n == 0 { src[ch] } else if max { dst[ch].max(src[ch]) } else { dst[ch] + src[ch] };
+                    }
+                    n += 1;
+                }
+            }
+            if !max {
+                let inv = 1.0 / n as f32;
+                dst.iter_mut().for_each(|v| *v *= inv);
             }
         }
     }

@@ -123,6 +123,26 @@ multiversion! {
     }
 }
 
+/// erf(x) for float32 (a Chebyshev-fitted erfc: |error| < 1.2e-7).
+pub fn erf(x: f32) -> f32 {
+    let t = 1.0 / (1.0 + 0.5 * x.abs() as f64);
+    let y = 1.0
+        - t * (-((x as f64) * (x as f64)) - 1.265_512_23
+            + t * (1.000_023_68
+                + t * (0.374_091_96
+                    + t * (0.096_784_18
+                        + t * (-0.186_288_06 + t * (0.278_868_07 + t * (-1.135_203_98 + t * (1.488_515_87 + t * (-0.822_152_23 + t * 0.170_872_77)))))))))
+        .exp();
+    (if x >= 0.0 { y } else { -y }) as f32
+}
+
+/// GELU with the exact erf, in place.
+pub fn gelu(x: &mut [f32]) {
+    for v in x {
+        *v = *v * 0.5 * (1.0 + erf(*v / std::f32::consts::SQRT_2));
+    }
+}
+
 /// The logistic function.
 #[inline]
 pub fn sigmoid(x: f32) -> f32 {
@@ -149,6 +169,13 @@ mod tests {
         }
         assert!(worst < 5e-7, "relative error {worst}");
         assert!(exp_f32(-200.0) < 1e-37 && exp_f32(-200.0) >= 0.0);
+    }
+
+    #[test]
+    fn erf_accuracy() {
+        for (x, want) in [(0.0f32, 0.0f32), (0.5, 0.520_499_9), (1.0, 0.842_700_8), (-1.5, -0.966_105_15), (3.0, 0.999_977_9)] {
+            assert!((erf(x) - want).abs() < 2e-7, "erf({x}) = {}", erf(x));
+        }
     }
 
     #[test]
